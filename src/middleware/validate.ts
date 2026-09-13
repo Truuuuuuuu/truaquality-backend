@@ -1,16 +1,18 @@
 import type { NextFunction, Request, Response } from "express";
 import { z, type ZodType } from "zod";
 
-export function validateBody<T>(schema: ZodType<T>) {
+export function validate<T>(schema: ZodType<T>, source: "body" | "params" = "body") {
   return (req: Request, res: Response, next: NextFunction) => {
-    const result = schema.safeParse(req.body);
+    const result = schema.safeParse(req[source]);
     if (!result.success) {
       return res.status(400).json({
-        error: "invalid request body",
+        error: `invalid request ${source}`,
         details: z.flattenError(result.error).fieldErrors,
       });
     }
-    req.body = result.data;
+    if (source === "body") {
+      req.body = result.data;
+    }
     next();
   };
 }

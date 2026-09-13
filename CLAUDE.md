@@ -4,110 +4,157 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-Express 5 + TypeScript backend. Prisma is the ORM, talking to a Supabase-hosted Postgres database. Auth is
-handled entirely by Supabase Auth (not a hand-rolled user table/JWT system — that was built once, then
-deliberately removed in favor of Supabase Auth; see "Auth" below for why). Request bodies are validated with
-Zod, and routes can be protected with a `requireAuth` middleware that verifies Supabase's JWTs. Current
-surface area: `/health`, `/health/db`, `/auth/signup` + `/auth/login`, and `/me` (protected, demos
-`requireAuth`).
+Express 5 + TypeScript backend for a **government** water-quality monitoring system. Prisma is the ORM, talking
+to a Supabase-hosted Postgres database. Supabase Auth owns credentials and JWTs.
+
+**Account creation is invite-only.** There is no public signup. Only super admins create accounts, through
+`/admin/*`, and new users set their password from an emailed invite link. Users belong to one or more
+**offices** (e.g. a regional fisheries office or LGU). Ponds and IoT devices are planned to attach to offices
+next.
+
+Current surface area:
+- `/health`, `/health/db`
+- `/auth/login`
+- `/me` (protected)
+- `/admin/*` (super admin only): offices, user invites, user enable/disable, office memberships
 
 ## Commands
 
 - Start: `npm run start` (`node src/index.ts`)
 - Dev with reload: `npm run dev` (`node --watch src/index.ts`)
 - Typecheck: `npx tsc --noEmit -p tsconfig.json` (there is no `test`/`typecheck` npm script yet)
-- Generate Prisma client after any schema change: `npx prisma generate` — **`prisma migrate dev` does NOT
-  reliably regenerate the client in this setup; always run `prisma generate` explicitly afterward and
-  confirm the model actually shows up (e.g. `grep -n "User" src/generated/prisma/models.ts`) before assuming
-  `prisma.<model>` will work.**
-- Create + apply a migration: `npx prisma migrate dev --name <description>`
-- Prisma CLI config lives in `prisma7.config.ts`, not `schema.prisma` — that's where `DIRECT_URL` is wired up
-  for the CLI (migrate/introspect/studio).
+- Create the first super admin (or promote an existing user):
+  `npm run seed:admin -- --email <email> --name "<full name>"`
+- Generate Prisma client after any schema change: `npx prisma generate`.
+  - **`prisma migrate dev` does NOT reliably regenerate the client in this setup.** Always run
+    `prisma generate` explicitly afterward.
+  - Before assuming `prisma.<model>` will work, confirm the model actually shows up
+    (e.g. `grep -n "Profile" src/generated/prisma/models.ts`).
+- Create a migration: `npx prisma migrate dev --create-only --name <description>`. Add the RLS lines (see
+  below) to the generated SQL, then apply it with `npx prisma migrate dev`.
+- Prisma CLI config lives in `prisma7.config.ts`, not `schema.prisma`. That's where `DIRECT_URL` is wired up for
+  the CLI (migrate/introspect/studio).
+- Before starting the server for a manual test, kill anything already on port 3000
+  (`lsof -ti:3000 | xargs kill -9`). Background servers from earlier test runs keep stale `.env` values and
+  silently answer requests instead of the new process.
 
 ## Architecture
 
 ### Runtime: no build step, Node runs TypeScript natively
 
-`tsconfig.json` has `noEmit: true`. There is no compile step — Node 26's built-in TypeScript type-stripping
-runs `.ts` files directly (`node src/index.ts`). This means Node's own ESM resolver is in play, not
-`tsc`/`tsx`/`ts-node`'s looser resolution:
+`tsconfig.json` has `noEmit: true`. There is no compile step. Node 26's built-in TypeScript type-stripping
+runs `.ts` files directly (`node src/index.ts`). That means Node's own ESM resolver is in play, not the looser
+resolution of `tsc`/`tsx`/`ts-node`:
 
 - **Relative imports must use the real `.ts` extension** (`import { prisma } from "./lib/prisma.ts"`), not
-  `.js`. Node does not rewrite `.js` specifiers to `.ts` files the way bundlers or `tsx` do — using `.js`
-  here throws `ERR_MODULE_NOT_FOUND` at runtime even though `tsc --noEmit` won't catch it.
-- `rewriteRelativeImportExtensions` in `tsconfig.json` is what permits writing `.ts` extensions in imports
-  without a TS error; it's irrelevant to how Node resolves them at runtime, but required for the above
-  pattern to typecheck.
-- If a build step is ever introduced (bundling for deployment, etc.), revisit this — a bundler will want the
+  `.js`. Node does not rewrite `.js` specifiers to `.ts` files the way bundlers or `tsx` do. A `.js` import
+  throws `ERR_MODULE_NOT_FOUND` at runtime, and `tsc --noEmit` won't catch it.
+- `rewriteRelativeImportExtensions` in `tsconfig.json` is what permits `.ts` extensions in imports without a
+  TS error. It doesn't affect how Node resolves them at runtime, but the pattern above needs it to typecheck.
+- If a build step is ever introduced (bundling for deployment, etc.), revisit this. A bundler will want the
   conventional `.js` extensions instead.
 
 ### Database & ORM (Prisma 7 + Supabase Postgres)
 
-- **Pin `prisma` and `@prisma/client` to the same explicit version.** npm's `latest` dist-tag for the
-  `prisma` CLI package has pointed at pre-release/RC versions before (e.g. `8.0.0-rc.x`) while
-  `@prisma/client`'s `latest` stayed on a stable prior major — installing both as `^latest` silently mixes
-  incompatible majors and pulls in a CLI with a different `init`/config flow than what's documented for the
-  stable line. Check `npm view prisma dist-tags` / `npm view @prisma/client dist-tags` before bumping.
-- Prisma 7's `prisma-client` generator (in `schema.prisma`'s `generator client` block) requires a **driver
-  adapter** — there's no more built-in `datasourceUrl`/`datasources.url` shorthand on `PrismaClient`. This
-  project uses `@prisma/adapter-pg` (`PrismaPg`), wired up in `src/lib/prisma.ts`.
-- Supabase gives you two connection strings; both are needed and serve different purposes:
-  - `DATABASE_URL` — the **transaction-mode pooler** (port `6543`, `?pgbouncer=true`) — used by the app at
-    runtime via the driver adapter.
-  - `DIRECT_URL` — the **session-mode pooler** (port `5432`) — used by the Prisma CLI for
-    migrate/introspect/studio. (Supabase's plain "Direct connection" option requires a paid IPv4 add-on now
-    that direct connections are IPv6-only by default; the session pooler is the IPv4-compatible workaround
-    that avoids that entirely and needs no extra Supabase config.)
-- If a Supabase DB password contains a character like `@`, `:`, `/`, or `#`, it must be percent-encoded in
-  the connection string (`@` → `%40`) or URL parsing breaks with an opaque "Invalid URL" error.
-- `prisma init` (in the CLI versions around 7.10/8-rc) also scaffolds "AI agent skills" docs into
-  `.claude/skills/`, `.agents/`, `.windsurf/skills/`, and `skills-lock.json` by default — unrelated project
-  clutter, safe to delete (`--skills=none` on `prisma init` avoids it next time).
+- **Pin `prisma` and `@prisma/client` to the same explicit version.**
+  - npm's `latest` dist-tag for the `prisma` CLI has pointed at pre-release versions before (e.g.
+    `8.0.0-rc.x`), while `@prisma/client`'s `latest` stayed on a stable prior major.
+  - Installing both at `latest` silently mixes incompatible majors, and the RC CLI has a different
+    `init`/config flow.
+  - Check `npm view prisma dist-tags` and `npm view @prisma/client dist-tags` before bumping.
+- Prisma 7's `prisma-client` generator requires a **driver adapter**. There's no `datasourceUrl` shorthand on
+  `PrismaClient` anymore. This project uses `@prisma/adapter-pg` (`PrismaPg`) in `src/lib/prisma.ts`.
+- Supabase connection strings (both are needed):
+  - `DATABASE_URL`: the **transaction-mode pooler** (port `6543`, `?pgbouncer=true`), used by the app at runtime.
+  - `DIRECT_URL`: the **session-mode pooler** (port `5432`), used by the Prisma CLI. Supabase's plain "Direct
+    connection" needs a paid IPv4 add-on; the session pooler avoids that.
+- A DB password containing `@`, `:`, `/`, or `#` must be percent-encoded in the connection string (`@` →
+  `%40`). Otherwise URL parsing fails with an opaque "Invalid URL" error.
+- **Every table in `public` must have RLS enabled.**
+  - Why: Supabase exposes the `public` schema through its Data API to anyone holding the publishable key.
+  - How: add `ALTER TABLE "<Table>" ENABLE ROW LEVEL SECURITY;` to each migration that creates a table.
+    Policies aren't needed: with none, the Data API is denied. The backend connects as the table owner, so
+    Prisma bypasses RLS.
+- `prisma init` (CLI ~7.10/8-rc) also scaffolds "AI agent skills" into `.claude/skills/`, `.agents/`,
+  `.windsurf/skills/`, and `skills-lock.json`. That's unrelated clutter and safe to delete; `--skills=none`
+  avoids it.
 
-### Auth: Supabase Auth, not custom
+### Identity model
 
-Signup/login (`src/routes/auth.ts`) call `supabase.auth.signUp` / `signInWithPassword` via
-`src/lib/supabase.ts` (built from `SUPABASE_URL` + `SUPABASE_PUBLISHABLE_KEY` — Supabase's newer naming for
-what used to be called the "anon" key). Supabase owns the user table (`auth.users`), password hashing, and
-session/JWT issuance — none of that is reimplemented here.
+- `Profile`: one row per provisioned user.
+  - `id` equals Supabase's `auth.users.id`. There are no password fields; Supabase Auth keeps credentials.
+  - `systemRole`: `SUPER_ADMIN` | `USER`.
+  - `status`: `INVITED` (invite sent, not accepted) → `ACTIVE` (first authenticated request) → `DISABLED`.
+- `Office` and `OfficeMember` form a many-to-many link between users and offices. `OfficeMember.role`
+  (`MANAGER` | `MEMBER`) is stored but not enforced yet; it's meant for pond/device permissions.
+- `AuditLog` records admin actions such as `user.invite`, `user.disable`, `office.create`, and
+  `office.member.add`. Write it through `logAudit()` in `src/lib/audit.ts`, inside the same `$transaction` as
+  the change it records.
 
-A custom `User` Prisma model + bcrypt hashing + self-signed JWTs was built first, then intentionally dropped
-once the decision was made to use Supabase Auth instead, to avoid a duplicate/conflicting identity system.
-If app-specific user data is needed later (profile fields, roles, etc.), model it as a separate table (e.g.
-`Profile`) keyed on Supabase's `auth.users.id`, rather than reintroducing a credentials table.
+### Auth and account creation
 
-**Email confirmation is currently disabled** in the Supabase project (Authentication → Providers → Email →
-"Confirm email") for frictionless local dev — signup returns a usable `session` immediately instead of
-`session: null`. Re-enable it before any real users can reach these endpoints.
+- **Public signup is closed.** There is no signup route, and the Supabase dashboard must keep **"Allow new
+  users to sign up" off**. Removing the route alone isn't enough, because anyone with the publishable key
+  could call Supabase's `signUp` directly.
+- Two Supabase clients:
+  - `src/lib/supabase.ts` (publishable key): login and JWT verification.
+  - `src/lib/supabaseAdmin.ts` (`SUPABASE_SECRET_KEY`): user management (invite, ban, delete). This key
+    bypasses RLS and must never reach the frontend or firmware.
+- **Invite flow** (`POST /admin/users`):
+  1. Call `supabaseAdmin.auth.admin.inviteUserByEmail`.
+  2. Create the `Profile`, `OfficeMember`, and `AuditLog` rows in one transaction.
+  3. If the DB write fails, delete the Supabase user so no orphaned login remains.
+  The invite link lands on `INVITE_REDIRECT_URL` (a frontend page where the user sets a password). That URL
+  must be in Supabase's allowed redirect URLs.
+- `npm run seed:admin` (`scripts/seed-admin.ts`) bootstraps the first super admin the same way. It is
+  idempotent: an existing profile just gets promoted.
+- Inviting real users requires **custom SMTP** in Supabase. The built-in mailer is heavily rate-limited.
+
+### Route protection (`requireAuth`, `requireSuperAdmin`)
+
+`src/middleware/requireAuth.ts`:
+1. Reads `Authorization: Bearer <token>`.
+2. Verifies the token with `supabase.auth.getClaims(token)`. Supabase signs tokens with ES256, so this checks
+   the signature locally against cached JWKS, with no Auth-server round trip. The lower-level `getUser(token)`
+   always calls the server.
+3. Loads the caller's `Profile` (with office memberships). No profile, or `DISABLED`, returns `403`. A valid
+   Supabase user who was never provisioned gets no access.
+4. Promotes `INVITED` to `ACTIVE`.
+5. Attaches `req.user` (claims) and `req.profile`, typed via declaration merging in the same file.
+
+Because the profile is checked on every request, **disabling a user locks them out immediately**, even though
+their JWT stays valid for up to an hour. `PATCH /admin/users/:id/status` also sets a Supabase ban, which blocks
+new logins and token refresh.
+
+`src/middleware/requireSuperAdmin.ts` returns `403` unless `req.profile.systemRole === "SUPER_ADMIN"`. It's
+applied to the whole `adminRouter` via `adminRouter.use(requireAuth, requireSuperAdmin)`.
 
 ### Request validation (Zod)
 
-`src/schemas/auth.ts` defines a schema per route (`signupSchema`, `loginSchema`); `src/middleware/validate.ts`
-exports a generic `validateBody(schema)` middleware that `safeParse`s `req.body`, replies `400` with
-field-level errors on failure, and otherwise replaces `req.body` with the parsed/typed result before calling
-`next()`. Use `z.flattenError(result.error)` for error formatting — this project is on **Zod v4**, where the
-older `.flatten()` instance method is deprecated in favor of the top-level `z.flattenError()` /
-`z.treeifyError()` / `z.prettifyError()` functions. New routes with a request body should follow the same
-pattern: define a schema, apply `validateBody(schema)` before the handler.
-
-### Route protection (`requireAuth`)
-
-`src/middleware/requireAuth.ts` protects routes by verifying the caller's Supabase-issued JWT. It reads the
-`Authorization: Bearer <token>` header and calls `supabase.auth.getClaims(token)` — the current recommended
-verification method now that Supabase signs tokens asymmetrically (ES256): it checks the signature locally
-against Supabase's cached JWKS instead of making a network round-trip to the Auth server on every request
-(unlike the lower-level `getUser(token)`, which always hits the server). On success it attaches the decoded
-claims to `req.user` (typed via declaration merging on `Express.Request` in the same file) and calls
-`next()`; on a missing/invalid/expired token it responds `401` directly. Apply it per-route
-(`app.get("/path", requireAuth, handler)`) or to an entire router (`router.use(requireAuth)`) — see `/me` in
-`src/index.ts` for the minimal example.
+- Schemas live in `src/schemas/`.
+- `validate(schema, source)` in `src/middleware/validate.ts` checks `req.body` (default) or `req.params` and
+  returns `400` with field-level errors.
+  - For `body`, it replaces `req.body` with the parsed data.
+  - Validate uuid route params with `validate(userIdParams, "params")`.
+- This project is on **Zod v4**:
+  - Use `z.flattenError(err)`, not the deprecated `.flatten()` method.
+  - Use `z.email()` / `z.uuid()`, e.g. `z.string().trim().toLowerCase().pipe(z.email())`, not the deprecated
+    `z.string().email()`.
 
 ### Environment variables (`.env`, gitignored)
 
-- `DATABASE_URL`, `DIRECT_URL` — see above
-- `PORT` — defaults to 3000 if unset
-- `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY` — from Supabase dashboard → Project Settings → API
+- `DATABASE_URL`, `DIRECT_URL`: see above
+- `PORT`: defaults to 3000 if unset
+- `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`: Supabase dashboard → Project Settings → API Keys
+- `SUPABASE_SECRET_KEY`: same page, "Secret keys". **Server-only.**
+- `INVITE_REDIRECT_URL`: frontend page the invite email links to
+
+**Email confirmation** is currently disabled in Supabase (Authentication → Providers → Email → "Confirm
+email"). Invited users confirm their email by opening the invite link either way. Re-enable it before
+production.
 
 ## Known follow-ups (not yet built)
 
-- No app-specific data models beyond auth.
+- Ponds, IoT devices, and sensor readings, scoped to offices, with `OfficeRole` permission enforcement.
+- Frontend accept-invite page (at `INVITE_REDIRECT_URL`) that sets the password via `supabase.auth.updateUser`.
+- Logout / refresh-token endpoints, CORS for the frontend origin, and rate limiting on `/auth/login`.

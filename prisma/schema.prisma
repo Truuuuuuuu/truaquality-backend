@@ -11,3 +11,70 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
+
+enum SystemRole {
+  SUPER_ADMIN
+  USER
+}
+
+enum ProfileStatus {
+  INVITED
+  ACTIVE
+  DISABLED
+}
+
+enum OfficeRole {
+  MANAGER
+  MEMBER
+}
+
+// id mirrors Supabase auth.users.id; credentials live in Supabase Auth, not here.
+model Profile {
+  id          String         @id @db.Uuid
+  email       String         @unique
+  fullName    String
+  systemRole  SystemRole     @default(USER)
+  status      ProfileStatus  @default(INVITED)
+  invitedById String?        @db.Uuid
+  invitedBy   Profile?       @relation("ProfileInvites", fields: [invitedById], references: [id], onDelete: SetNull)
+  invitees    Profile[]      @relation("ProfileInvites")
+  memberships OfficeMember[]
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+}
+
+model Office {
+  id        String         @id @default(uuid()) @db.Uuid
+  name      String
+  code      String         @unique
+  region    String?
+  members   OfficeMember[]
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+}
+
+model OfficeMember {
+  officeId  String     @db.Uuid
+  profileId String     @db.Uuid
+  role      OfficeRole @default(MEMBER)
+  createdAt DateTime   @default(now())
+  office    Office     @relation(fields: [officeId], references: [id], onDelete: Cascade)
+  profile   Profile    @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@id([officeId, profileId])
+  @@index([profileId])
+}
+
+// No FK on actorId so audit rows survive profile deletion.
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  actorId    String?  @db.Uuid
+  action     String
+  targetType String
+  targetId   String
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([targetType, targetId])
+  @@index([actorId])
+}

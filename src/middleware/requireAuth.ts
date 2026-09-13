@@ -1,11 +1,20 @@
 import type { NextFunction, Request, Response } from "express";
 import type { JwtPayload } from "@supabase/supabase-js";
+import type { Prisma } from "../generated/prisma/client.ts";
+import { prisma } from "../lib/prisma.ts";
 import { supabase } from "../lib/supabase.ts";
+
+const profileInclude = {
+  memberships: { include: { office: true } },
+} satisfies Prisma.ProfileInclude;
+
+export type AuthProfile = Prisma.ProfileGetPayload<{ include: typeof profileInclude }>;
 
 declare global {
   namespace Express {
     interface Request {
       user?: JwtPayload;
+      profile?: AuthProfile;
     }
   }
 }
@@ -23,6 +32,24 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     return res.status(401).json({ error: "invalid or expired token" });
   }
 
+  // Checked on every request so disabling a user takes effect before their JWT expires.
+  let profile = await prisma.profile.findUnique({
+    where: { id: data.claims.sub },
+    include: profileInclude,
+  });
+  if (!profile || profile.status === "DISABLED") {
+    return res.status(403).json({ error: "account is not provisioned or has been disabled" });
+  }
+
+  if (profile.status === "INVITED") {
+    profile = await prisma.profile.update({
+      where: { id: profile.id },
+      data: { status: "ACTIVE" },
+      include: profileInclude,
+    });
+  }
+
   req.user = data.claims;
+  req.profile = profile;
   next();
 }
