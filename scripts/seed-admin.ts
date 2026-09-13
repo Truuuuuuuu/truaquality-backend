@@ -23,13 +23,13 @@ const existing = await prisma.profile.findUnique({ where: { email } });
 
 if (existing) {
   await prisma.$transaction(async (tx) => {
-    await tx.profile.update({ where: { id: existing.id }, data: { systemRole: "SUPER_ADMIN" } });
+    await tx.profile.update({ where: { id: existing.id }, data: { systemRole: "ADMIN" } });
     await logAudit(
-      { actorId: null, action: "user.promote_super_admin", targetType: "profile", targetId: existing.id, metadata: { seed: true } },
+      { actorId: null, action: "user.promote_admin", targetType: "profile", targetId: existing.id, metadata: { seed: true } },
       tx,
     );
   });
-  console.log(`Promoted existing user ${email} to SUPER_ADMIN.`);
+  console.log(`Promoted existing user ${email} to ADMIN.`);
 } else {
   const { data, error } = await supabaseAdmin.auth.admin.inviteUserByEmail(email, {
     redirectTo: process.env.INVITE_REDIRECT_URL,
@@ -44,10 +44,10 @@ if (existing) {
   try {
     await prisma.$transaction(async (tx) => {
       await tx.profile.create({
-        data: { id: authUserId, email, fullName, systemRole: "SUPER_ADMIN" },
+        data: { id: authUserId, email, fullName, systemRole: "ADMIN" },
       });
       await logAudit(
-        { actorId: null, action: "user.invite", targetType: "profile", targetId: authUserId, metadata: { email, systemRole: "SUPER_ADMIN", seed: true } },
+        { actorId: null, action: "user.invite", targetType: "profile", targetId: authUserId, metadata: { email, systemRole: "ADMIN", seed: true } },
         tx,
       );
     });
@@ -55,7 +55,7 @@ if (existing) {
     await supabaseAdmin.auth.admin.deleteUser(authUserId);
     throw err;
   }
-  console.log(`Invited ${email} as SUPER_ADMIN. They must open the invite email to set a password.`);
+  console.log(`Invited ${email} as ADMIN. They must open the invite email to set a password.`);
 }
 
 await prisma.$disconnect();

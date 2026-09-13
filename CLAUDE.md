@@ -7,23 +7,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Express 5 + TypeScript backend for a **government** water-quality monitoring system. Prisma is the ORM, talking
 to a Supabase-hosted Postgres database. Supabase Auth owns credentials and JWTs.
 
-**Account creation is invite-only.** There is no public signup. Only super admins create accounts, through
-`/admin/*`, and new users set their password from an emailed invite link. Users belong to one or more
-**offices** (e.g. a regional fisheries office or LGU). Ponds and IoT devices are planned to attach to offices
-next.
+**Scope: BFAR Sorsogon only.** This is a single-organization system: every user, and later every pond and
+IoT device, belongs to BFAR Sorsogon. There is intentionally no office, region, or tenant model — don't add
+one.
+
+**Account creation is invite-only.** There is no public signup. Only admins create accounts, through
+`/admin/*`, and new users set their password from an emailed invite link.
 
 Current surface area:
 - `/health`, `/health/db`
 - `/auth/login`
 - `/me` (protected)
-- `/admin/*` (super admin only): offices, user invites, user enable/disable, office memberships
+- `/admin/*` (admin only): user invites, resend invite, user enable/disable
 
 ## Commands
 
 - Start: `npm run start` (`node src/index.ts`)
 - Dev with reload: `npm run dev` (`node --watch src/index.ts`)
 - Typecheck: `npx tsc --noEmit -p tsconfig.json` (there is no `test`/`typecheck` npm script yet)
-- Create the first super admin (or promote an existing user):
+- Create the first admin (or promote an existing user):
   `npm run seed:admin -- --email <email> --name "<full name>"`
 - Generate Prisma client after any schema change: `npx prisma generate`.
   - **`prisma migrate dev` does NOT reliably regenerate the client in this setup.** Always run
@@ -32,6 +34,10 @@ Current surface area:
     (e.g. `grep -n "Profile" src/generated/prisma/models.ts`).
 - Create a migration: `npx prisma migrate dev --create-only --name <description>`. Add the RLS lines (see
   below) to the generated SQL, then apply it with `npx prisma migrate dev`.
+  - **Renaming an enum value:** Prisma generates a drop-and-recreate of the enum, which fails or corrupts
+    existing rows using the old value. Hand-edit the SQL to `ALTER TYPE "<Enum>" RENAME VALUE 'OLD' TO 'NEW';`
+    instead (see `20260913170000_single_org_admin_role`, which renamed `SUPER_ADMIN` → `ADMIN` and dropped the
+    old `Office`/`OfficeMember` tables).
 - Prisma CLI config lives in `prisma7.config.ts`, not `schema.prisma`. That's where `DIRECT_URL` is wired up for
   the CLI (migrate/introspect/studio).
 - Before starting the server for a manual test, kill anything already on port 3000
@@ -83,13 +89,12 @@ resolution of `tsc`/`tsx`/`ts-node`:
 
 - `Profile`: one row per provisioned user.
   - `id` equals Supabase's `auth.users.id`. There are no password fields; Supabase Auth keeps credentials.
-  - `systemRole`: `SUPER_ADMIN` | `USER`.
+  - `systemRole`: `ADMIN` | `USER`.
   - `status`: `INVITED` (invite sent, not accepted) → `ACTIVE` (first authenticated request) → `DISABLED`.
-- `Office` and `OfficeMember` form a many-to-many link between users and offices. `OfficeMember.role`
-  (`MANAGER` | `MEMBER`) is stored but not enforced yet; it's meant for pond/device permissions.
-- `AuditLog` records admin actions such as `user.invite`, `user.disable`, `office.create`, and
-  `office.member.add`. Write it through `logAudit()` in `src/lib/audit.ts`, inside the same `$transaction` as
-  the change it records.
+- `AuditLog` records admin actions such as `user.invite`, `user.disable`, and `user.promote_admin`. Write it
+  through `logAudit()` in `src/lib/audit.ts`, inside the same `$transaction` as the change it records. Older
+  rows may still carry pre-refactor actions (`office.*`, `user.promote_super_admin`); they're history, leave
+  them.
 
 ### Auth and account creation
 
@@ -102,22 +107,22 @@ resolution of `tsc`/`tsx`/`ts-node`:
     bypasses RLS and must never reach the frontend or firmware.
 - **Invite flow** (`POST /admin/users`):
   1. Call `supabaseAdmin.auth.admin.inviteUserByEmail`.
-  2. Create the `Profile`, `OfficeMember`, and `AuditLog` rows in one transaction.
+  2. Create the `Profile` and `AuditLog` rows in one transaction.
   3. If the DB write fails, delete the Supabase user so no orphaned login remains.
   The invite link lands on `INVITE_REDIRECT_URL` (a frontend page where the user sets a password). That URL
   must be in Supabase's allowed redirect URLs.
-- `npm run seed:admin` (`scripts/seed-admin.ts`) bootstraps the first super admin the same way. It is
+- `npm run seed:admin` (`scripts/seed-admin.ts`) bootstraps the first admin the same way. It is
   idempotent: an existing profile just gets promoted.
 - Inviting real users requires **custom SMTP** in Supabase. The built-in mailer is heavily rate-limited.
 
-### Route protection (`requireAuth`, `requireSuperAdmin`)
+### Route protection (`requireAuth`, `requireAdmin`)
 
 `src/middleware/requireAuth.ts`:
 1. Reads `Authorization: Bearer <token>`.
 2. Verifies the token with `supabase.auth.getClaims(token)`. Supabase signs tokens with ES256, so this checks
    the signature locally against cached JWKS, with no Auth-server round trip. The lower-level `getUser(token)`
    always calls the server.
-3. Loads the caller's `Profile` (with office memberships). No profile, or `DISABLED`, returns `403`. A valid
+3. Loads the caller's `Profile`. No profile, or `DISABLED`, returns `403`. A valid
    Supabase user who was never provisioned gets no access.
 4. Promotes `INVITED` to `ACTIVE`.
 5. Attaches `req.user` (claims) and `req.profile`, typed via declaration merging in the same file.
@@ -126,8 +131,8 @@ Because the profile is checked on every request, **disabling a user locks them o
 their JWT stays valid for up to an hour. `PATCH /admin/users/:id/status` also sets a Supabase ban, which blocks
 new logins and token refresh.
 
-`src/middleware/requireSuperAdmin.ts` returns `403` unless `req.profile.systemRole === "SUPER_ADMIN"`. It's
-applied to the whole `adminRouter` via `adminRouter.use(requireAuth, requireSuperAdmin)`.
+`src/middleware/requireAdmin.ts` returns `403` unless `req.profile.systemRole === "ADMIN"`. It's applied to
+the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
 
 ### Request validation (Zod)
 
@@ -155,6 +160,6 @@ production.
 
 ## Known follow-ups (not yet built)
 
-- Ponds, IoT devices, and sensor readings, scoped to offices, with `OfficeRole` permission enforcement.
+- Ponds, IoT devices, and sensor readings (all belonging to BFAR Sorsogon), with role-based permissions.
 - Frontend accept-invite page (at `INVITE_REDIRECT_URL`) that sets the password via `supabase.auth.updateUser`.
 - Logout / refresh-token endpoints, CORS for the frontend origin, and rate limiting on `/auth/login`.

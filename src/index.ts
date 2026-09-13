@@ -1,4 +1,5 @@
 import "dotenv/config";
+import cors from "cors";
 import express, { type ErrorRequestHandler } from "express";
 import { prisma } from "./lib/prisma.ts";
 import { requireAuth } from "./middleware/requireAuth.ts";
@@ -8,6 +9,18 @@ import { authRouter } from "./routes/auth.ts";
 const app = express();
 const port = process.env.PORT ?? 3000;
 
+// Comma-separated list of allowed browser origins, e.g. "http://localhost:5173,https://app.example.com".
+const allowedOrigins = (process.env.CORS_ORIGIN ?? "http://localhost:5173")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+app.use(
+  cors({
+    origin: allowedOrigins,
+    allowedHeaders: ["Content-Type", "Authorization"],
+  }),
+);
 app.use(express.json());
 
 app.get("/health", (_req, res) => {
