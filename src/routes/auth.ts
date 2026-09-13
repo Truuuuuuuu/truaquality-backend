@@ -1,14 +1,12 @@
 import { Router } from "express";
 import { supabase } from "../lib/supabase.ts";
+import { validateBody } from "../middleware/validate.ts";
+import { loginSchema, signupSchema } from "../schemas/auth.ts";
 
 export const authRouter = Router();
 
-authRouter.post("/signup", async (req, res) => {
-  const { email, password } = req.body ?? {};
-
-  if (typeof email !== "string" || typeof password !== "string") {
-    return res.status(400).json({ error: "email and password are required" });
-  }
+authRouter.post("/signup", validateBody(signupSchema), async (req, res) => {
+  const { email, password } = req.body;
 
   const { data, error } = await supabase.auth.signUp({ email, password });
   if (error) {
@@ -18,12 +16,8 @@ authRouter.post("/signup", async (req, res) => {
   res.status(201).json({ user: data.user, session: data.session });
 });
 
-authRouter.post("/login", async (req, res) => {
-  const { email, password } = req.body ?? {};
-
-  if (typeof email !== "string" || typeof password !== "string") {
-    return res.status(400).json({ error: "email and password are required" });
-  }
+authRouter.post("/login", validateBody(loginSchema), async (req, res) => {
+  const { email, password } = req.body;
 
   const { data, error } = await supabase.auth.signInWithPassword({ email, password });
   if (error) {

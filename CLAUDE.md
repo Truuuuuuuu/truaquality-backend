@@ -6,8 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Express 5 + TypeScript backend. Prisma is the ORM, talking to a Supabase-hosted Postgres database. Auth is
 handled entirely by Supabase Auth (not a hand-rolled user table/JWT system — that was built once, then
-deliberately removed in favor of Supabase Auth; see "Auth" below for why). Current surface area: `/health`,
-`/health/db`, and `/auth/signup` + `/auth/login`.
+deliberately removed in favor of Supabase Auth; see "Auth" below for why). Request bodies are validated with
+Zod, and routes can be protected with a `requireAuth` middleware that verifies Supabase's JWTs. Current
+surface area: `/health`, `/health/db`, `/auth/signup` + `/auth/login`, and `/me` (protected, demos
+`requireAuth`).
 
 ## Commands
 
@@ -78,6 +80,28 @@ If app-specific user data is needed later (profile fields, roles, etc.), model i
 "Confirm email") for frictionless local dev — signup returns a usable `session` immediately instead of
 `session: null`. Re-enable it before any real users can reach these endpoints.
 
+### Request validation (Zod)
+
+`src/schemas/auth.ts` defines a schema per route (`signupSchema`, `loginSchema`); `src/middleware/validate.ts`
+exports a generic `validateBody(schema)` middleware that `safeParse`s `req.body`, replies `400` with
+field-level errors on failure, and otherwise replaces `req.body` with the parsed/typed result before calling
+`next()`. Use `z.flattenError(result.error)` for error formatting — this project is on **Zod v4**, where the
+older `.flatten()` instance method is deprecated in favor of the top-level `z.flattenError()` /
+`z.treeifyError()` / `z.prettifyError()` functions. New routes with a request body should follow the same
+pattern: define a schema, apply `validateBody(schema)` before the handler.
+
+### Route protection (`requireAuth`)
+
+`src/middleware/requireAuth.ts` protects routes by verifying the caller's Supabase-issued JWT. It reads the
+`Authorization: Bearer <token>` header and calls `supabase.auth.getClaims(token)` — the current recommended
+verification method now that Supabase signs tokens asymmetrically (ES256): it checks the signature locally
+against Supabase's cached JWKS instead of making a network round-trip to the Auth server on every request
+(unlike the lower-level `getUser(token)`, which always hits the server). On success it attaches the decoded
+claims to `req.user` (typed via declaration merging on `Express.Request` in the same file) and calls
+`next()`; on a missing/invalid/expired token it responds `401` directly. Apply it per-route
+(`app.get("/path", requireAuth, handler)`) or to an entire router (`router.use(requireAuth)`) — see `/me` in
+`src/index.ts` for the minimal example.
+
 ### Environment variables (`.env`, gitignored)
 
 - `DATABASE_URL`, `DIRECT_URL` — see above
@@ -86,6 +110,4 @@ If app-specific user data is needed later (profile fields, roles, etc.), model i
 
 ## Known follow-ups (not yet built)
 
-- No middleware verifies a request's Supabase `access_token` (e.g. via `supabase.auth.getUser(token)`) to
-  protect routes — every route is currently unauthenticated.
 - No app-specific data models beyond auth.

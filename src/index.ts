@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express, { type ErrorRequestHandler } from "express";
 import { prisma } from "./lib/prisma.ts";
+import { requireAuth } from "./middleware/requireAuth.ts";
 import { authRouter } from "./routes/auth.ts";
 
 const app = express();
@@ -22,6 +23,10 @@ app.get("/health/db", async (_req, res) => {
 });
 
 app.use("/auth", authRouter);
+
+app.get("/me", requireAuth, (req, res) => {
+  res.json({ user: req.user });
+});
 
 const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
   console.error(err);
