@@ -16,7 +16,7 @@ one.
 
 Current surface area:
 - `/health`, `/health/db`
-- `/auth/login`
+- `/auth/login`, `/auth/refresh`
 - `/me` (protected)
 - `/admin/*` (admin only): user invites, resend invite, user enable/disable
 
@@ -162,4 +162,3 @@ production.
 
 - Ponds, IoT devices, and sensor readings (all belonging to BFAR Sorsogon), with role-based permissions.
 - Frontend accept-invite page (at `INVITE_REDIRECT_URL`) that sets the password via `supabase.auth.updateUser`.
-- Logout / refresh-token endpoints, CORS for the frontend origin, and rate limiting on `/auth/login`.

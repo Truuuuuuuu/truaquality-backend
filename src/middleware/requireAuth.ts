@@ -9,6 +9,7 @@ declare global {
     interface Request {
       user?: JwtPayload;
       profile?: Profile;
+      token?: string;
     }
   }
 }
@@ -38,5 +39,6 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
 
   req.user = data.claims;
   req.profile = profile;
+  req.token = token;
   next();
 }
