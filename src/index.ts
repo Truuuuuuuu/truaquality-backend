@@ -35,7 +35,9 @@ app.get("/health/db", async (_req, res) => {
     await prisma.$queryRaw`SELECT 1`;
     res.json({ status: "ok" });
   } catch (error) {
-    res.status(500).json({ status: "error", message: (error as Error).message });
+    res
+      .status(500)
+      .json({ status: "error", message: (error as Error).message });
   }
 });
 
@@ -54,9 +56,22 @@ const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
 };
 app.use(errorHandler);
 
-app.listen(port, () => {
+const server = app.listen(port, () => {
   console.log(`Server listening on port ${port}`);
+
+  // Devices don't call the HTTP API: they publish signed readings to the MQTT broker, and this picks them up.
+  // Set MQTT_ENABLED=false to skip this (e.g. doing UI-only work) without touching device/pond code.
+  if (process.env.MQTT_ENABLED === "false") {
+    console.log("[mqtt] disabled (MQTT_ENABLED=false)");
+  } else {
+    startReadingsSubscriber();
+  }
 });
 
-// Devices don't call the HTTP API: they publish signed readings to the MQTT broker, and this picks them up.
-startReadingsSubscriber();
+// Without this, a failed bind (e.g. another instance already on this port) leaves the process alive with no
+// HTTP server but the MQTT subscriber would still start — a second silent client fighting the real one for the
+// same broker session.
+server.on("error", (err) => {
+  console.error(`Failed to start server: ${(err as Error).message}`);
+  process.exit(1);
+});

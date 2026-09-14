@@ -34,7 +34,11 @@ export async function ingestSamples(
   const rejected: RejectedValue[] = [];
   for (const sample of message.samples) {
     const recordedAt = sample.recordedAt ?? receivedAt;
-    const values = Object.entries(sample.values);
+    // A null value means "this sensor had nothing to report" — the same thing an omitted key means. It's
+    // silently dropped, not treated as a rejected/invalid reading.
+    const values = Object.entries(sample.values).filter(
+      (entry): entry is [string, number] => entry[1] !== null,
+    );
 
     let sampleProblem: string | null = null;
     if (device.assignedAt && recordedAt < device.assignedAt) {

@@ -48,6 +48,13 @@ Current surface area:
 - Before starting the server for a manual test, kill anything already on port 3000
   (`lsof -ti:3000 | xargs kill -9`). Background servers from earlier test runs keep stale `.env` values and
   silently answer requests instead of the new process.
+  - **This alone is not enough for `npm run dev` (`node --watch`).** Killing the port holder only kills the
+    watch mode's *child* process; the parent watcher immediately respawns it. Check for stray watchers too:
+    `ps aux | grep "node --watch src/index.ts"`, and kill those PIDs directly. A real incident: two leftover
+    `npm run dev` processes from a previous session (started the day before, never stopped) plus a fresh one
+    all held live MQTT connections using the same default `MQTT_CLIENT_ID` — HiveMQ kept disconnecting
+    whichever one had connected longest every time another reconnected, producing a continuous
+    `[mqtt] reconnecting` loop that looked like a HiveMQ or code problem but was just duplicate processes.
 
 ## Architecture
 
@@ -189,6 +196,11 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
   Prisma's `distinct`, which de-duplicates in memory, or `DISTINCT ON`, which reads every row for the pond.
 - `adminPondsRouter` / `adminDevicesRouter` are mounted **inside** `adminRouter`, which already applies
   `requireAuth` + `requireAdmin`. Mounting them separately under `/admin` would run auth twice.
+- `startReadingsSubscriber()` is called **inside** `app.listen()`'s success callback, not right after it
+  unconditionally, and `server.on("error", ...)` exits the process on a failed bind (e.g. port already
+  taken). Earlier this wasn't the case: a failed HTTP bind still let the MQTT subscriber start, so a second
+  instance could sit there with no working API but a live, colliding MQTT connection — a subtler version of
+  the duplicate-process problem described above under Commands.
 
 ### Request validation (Zod)
 
@@ -218,6 +230,13 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
   backend.
 - `DEVICE_SECRET_MASTER_KEY`: at least 32 random characters, **server-only**. Every device secret is derived
   from it. Generate one with `node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"`.
+- `MQTT_ENABLED` (optional, default effectively `true`): set to `"false"` to skip connecting to HiveMQ
+  entirely — useful when working on UI/other features and you don't need live device data. The HTTP API
+  still runs normally either way; only the MQTT subscriber is skipped.
+  - **Requires a restart to take effect.** `dotenv` loads `.env` once at process startup; editing this value
+    while a server is already running does nothing until you stop and start it again. The log line at
+    startup (`[mqtt] disabled (MQTT_ENABLED=false)` vs `[mqtt] connected, subscribing to ...`) is the way to
+    confirm which mode the currently-running process is actually in.
 
 **Email confirmation** is currently disabled in Supabase (Authentication → Providers → Email → "Confirm
 email"). Invited users confirm their email by opening the invite link either way. Re-enable it before
