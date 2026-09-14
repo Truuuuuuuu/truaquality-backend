@@ -14,9 +14,25 @@ export const updatePondSchema = z.object({
   status: z.enum(["ACTIVE", "ARCHIVED"]).optional(),
 });
 
-export const readingsQuery = z.object({
+const isoDate = z.iso.datetime({ offset: true }).transform((value) => new Date(value));
+
+// Keyset pagination for /:id/readings: `before` is an opaque cursor from a previous page's `nextCursor`,
+// not a raw timestamp, so a client can't be tempted to hand-craft one that skips the tie-breaking id.
+export const readingsPageQuery = z.object({
   parameter: z.enum(PARAMETER_IDS).optional(),
-  from: z.iso.datetime({ offset: true }).transform((value) => new Date(value)).optional(),
-  to: z.iso.datetime({ offset: true }).transform((value) => new Date(value)).optional(),
-  limit: z.coerce.number().int().min(1).max(1000).default(1000),
+  before: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+});
+
+export const seriesQuery = z.object({
+  parameter: z.enum(PARAMETER_IDS).optional(),
+  from: isoDate,
+  to: isoDate.optional(),
+});
+
+export const readingsExportQuery = z.object({
+  parameter: z.enum(PARAMETER_IDS).optional(),
+  from: isoDate,
+  to: isoDate.optional(),
+  resolution: z.enum(["raw", "hour"]).default("hour"),
 });

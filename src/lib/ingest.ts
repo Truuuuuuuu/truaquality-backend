@@ -5,7 +5,8 @@ import { PARAMETER_BOUNDS, isParameterId } from "./parameters.ts";
 import { prisma } from "./prisma.ts";
 
 // A unit buffers at most a couple of hours offline; anything much older is a broken clock or a replay.
-const MAX_SAMPLE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+// Exported so the rollup job (readingRollup.ts) knows how far back a "final" hour has to be.
+export const MAX_SAMPLE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 export type RejectedValue = { recordedAt: Date; parameter: string; value: number; reason: string };
 

@@ -5,6 +5,7 @@ import { prisma } from "./lib/prisma.ts";
 import { requireAuth } from "./middleware/requireAuth.ts";
 import { adminRouter } from "./routes/admin.ts";
 import { authRouter } from "./routes/auth.ts";
+import { startReadingRollup } from "./lib/readingRollup.ts";
 import { startReadingsSubscriber } from "./lib/readingsSubscriber.ts";
 import { devicesRouter } from "./routes/devices.ts";
 import { pondsRouter } from "./routes/ponds.ts";
@@ -22,6 +23,10 @@ app.use(
   cors({
     origin: allowedOrigins,
     allowedHeaders: ["Content-Type", "Authorization"],
+    // Without this, the browser blocks script access to this header on a cross-origin response (it's not
+    // one of the CORS-safelisted ones) — the frontend's readings-export download would silently fall back
+    // to a generic filename instead of the one the server names in Content-Disposition.
+    exposedHeaders: ["Content-Disposition"],
   }),
 );
 app.use(express.json());
@@ -65,6 +70,14 @@ const server = app.listen(port, () => {
     console.log("[mqtt] disabled (MQTT_ENABLED=false)");
   } else {
     startReadingsSubscriber();
+  }
+
+  // Hourly rollup of raw readings into ReadingHourly, then prunes raw rows past the retention window.
+  // Set ROLLUP_ENABLED=false to skip this (e.g. doing UI-only work against a database you don't want touched).
+  if (process.env.ROLLUP_ENABLED === "false") {
+    console.log("[rollup] disabled (ROLLUP_ENABLED=false)");
+  } else {
+    startReadingRollup();
   }
 });
 

@@ -63,14 +63,15 @@ enum DeviceStatus {
 
 // Ponds are archived, never deleted, so their reading history stays intact.
 model Pond {
-  id        String     @id @default(uuid()) @db.Uuid
-  name      String     @unique
-  notes     String?
-  status    PondStatus @default(ACTIVE)
-  device    Device?
-  readings  Reading[]
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
+  id             String          @id @default(uuid()) @db.Uuid
+  name           String          @unique
+  notes          String?
+  status         PondStatus      @default(ACTIVE)
+  device         Device?
+  readings       Reading[]
+  readingsHourly ReadingHourly[]
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
 }
 
 // One ESP32 sensor unit. It signs every MQTT message with a secret derived from DEVICE_SECRET_MASTER_KEY, its
@@ -111,4 +112,22 @@ model Reading {
   // Lets a device safely retry an upload: duplicates are skipped instead of double-counted.
   @@unique([deviceId, parameter, recordedAt])
   @@index([pondId, parameter, recordedAt(sort: Desc)])
+  // Lets the retention job find and delete old rows without scanning the whole table.
+  @@index([recordedAt])
+}
+
+// One row per pond/parameter/hour, kept forever after the matching raw Reading rows age out of the
+// retention window. sum+count (not avg) so a day/year rollup can still weight each hour by how many
+// samples it actually had.
+model ReadingHourly {
+  pondId      String   @db.Uuid
+  pond        Pond     @relation(fields: [pondId], references: [id], onDelete: Restrict)
+  parameter   String
+  bucketStart DateTime
+  min         Float
+  max         Float
+  sum         Float
+  count       Int
+
+  @@id([pondId, parameter, bucketStart])
 }

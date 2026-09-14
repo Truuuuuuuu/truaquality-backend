@@ -18,7 +18,8 @@ Current surface area:
 - `/health`, `/health/db`
 - `/auth/login`, `/auth/refresh`, `/auth/logout`
 - `/me` (protected)
-- `/ponds`, `/ponds/:id`, `/ponds/:id/readings`, `/devices` (protected, any role)
+- `/ponds`, `/ponds/:id`, `/ponds/:id/readings` (paginated), `/ponds/:id/series`, `/ponds/:id/readings/export`
+  (.xlsx), `/devices` (protected, any role)
 - `/admin/*` (admin only): user invites, resend invite, user enable/disable; `/admin/ponds` (create, rename,
   archive); `/admin/devices` (register, assign to pond, disable, rotate secret)
 - **MQTT, not HTTP, for device data:** on startup the backend subscribes to
@@ -176,9 +177,33 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
   - Anyone with the shared broker credential can *read* every unit's readings (the topics aren't
     confidential), but can't forge them. Replaying a captured message is harmless: duplicates are skipped, and
     samples older than `Device.assignedAt` are refused.
+- **Reading history: raw rows for a rolling window, hourly summaries forever.** `Reading` holds per-minute
+  rows but is pruned past `RAW_RETENTION_DAYS` (env, default 30, floor `MAX_SAMPLE_AGE_MS`'s 7 days + 1 so
+  nothing is pruned before it's had a chance to be finalized in a rollup). `ReadingHourly` holds one
+  min/max/sum/count row per pond/parameter/hour and is never pruned.
+  - `src/lib/readingRollup.ts`: `startReadingRollup()` runs `runReadingRollupCycle()` once on boot and then
+    hourly (called from `app.listen()`'s callback in `src/index.ts`, same pattern as the MQTT subscriber; set
+    `ROLLUP_ENABLED=false` to skip it). Each cycle re-aggregates the last 7 days of `Reading` into
+    `ReadingHourly` (idempotent: `ON CONFLICT ... DO UPDATE`, so a late-arriving buffered sample just widens
+    that hour next time), then deletes `Reading` rows older than the retention window in batches.
+  - `pg_try_advisory_xact_lock` guards the rollup+prune pair so two backend instances (or a manual run
+    overlapping the hourly one) never do it twice at once. It's a transaction-scoped lock precisely because
+    `DATABASE_URL` is a pgbouncer transaction-mode pooler — a session-scoped lock wouldn't reliably hold
+    across statements there.
+  - `npm run rollup:readings` (`scripts/rollup-readings.ts`) runs one cycle manually and exits — useful for
+    testing, or for driving the job from an external scheduler instead of the in-process interval.
+  - `GET /ponds/:id/readings` is keyset-paginated (`before` cursor from `nextCursor`, encoded in
+    `src/lib/readingsCursor.ts`), not `from`/`to` + `limit` — an offset or a full-range fetch doesn't scale
+    once history spans months. `GET /ponds/:id/series` answers a chart over an arbitrary range and picks its
+    own resolution (raw / hourly / daily) based on how wide the range is. `GET /ponds/:id/readings/export`
+    streams a formatted `.xlsx` workbook of either (via `exceljs`'s streaming `WorkbookWriter`, so a large
+    export doesn't sit in memory), for reporting outside the app — one column per parameter, one row per
+    timestamp, bordered header/data cells, and real numeric cells carrying a custom number format that shows
+    the unit (e.g. `27.6 °C`) without turning the value into text.
 - `Reading`: **narrow table**, one row per parameter per sample (`parameter` is a string id).
   - Adding a sensor parameter needs no migration: add it to `PARAMETER_BOUNDS` in `src/lib/parameters.ts`
-    (physical sanity limits for rejecting garbage) and to `PARAMETERS` in the frontend (display ranges).
+    (physical sanity limits for rejecting garbage), to `PARAMETER_DISPLAY` in the same file (label/unit/
+    precision for the `.xlsx` export), and to `PARAMETERS` in the frontend (display ranges).
   - `pondId` is copied at ingest time, so readings stay with the pond they were measured in after a device
     is reassigned.
   - `@@unique([deviceId, parameter, recordedAt])` + `createMany({ skipDuplicates: true })` makes device
@@ -237,6 +262,12 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
     while a server is already running does nothing until you stop and start it again. The log line at
     startup (`[mqtt] disabled (MQTT_ENABLED=false)` vs `[mqtt] connected, subscribing to ...`) is the way to
     confirm which mode the currently-running process is actually in.
+- `ROLLUP_ENABLED` (optional, default effectively `true`): set to `"false"` to skip the in-process hourly
+  reading rollup/retention job (e.g. if it's driven by an external scheduler calling
+  `npm run rollup:readings` instead). Same restart-to-take-effect caveat as `MQTT_ENABLED`.
+- `RAW_RETENTION_DAYS` (optional, default `30`): how long raw `Reading` rows are kept before being pruned
+  (they're summarized into `ReadingHourly` first, which is kept forever). Floored at 8 days regardless of
+  what's set, since a lower value could prune a row before a device's buffered backlog upload for it arrives.
 
 **Email confirmation** is currently disabled in Supabase (Authentication → Providers → Email → "Confirm
 email"). Invited users confirm their email by opening the invite link either way. Re-enable it before
@@ -245,5 +276,4 @@ production.
 ## Known follow-ups (not yet built)
 
 - Finer-grained roles for pond/device management (today: any signed-in user reads, only `ADMIN` writes).
-- Reading retention/downsampling for long history ranges (`/ponds/:id/readings` caps at 1000 rows).
 - Frontend accept-invite page (at `INVITE_REDIRECT_URL`) that sets the password via `supabase.auth.updateUser`.

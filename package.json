@@ -12,6 +12,7 @@
     "seed:admin": "node scripts/seed-admin.ts",
     "set-password": "node scripts/set-password.ts",
     "simulate:devices": "node scripts/simulate-devices.ts",
+    "rollup:readings": "node scripts/rollup-readings.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
@@ -20,6 +21,7 @@
     "@supabase/supabase-js": "^2.116.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
+    "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "express-rate-limit": "8.7.0",
     "mqtt": "^5.15.2",
