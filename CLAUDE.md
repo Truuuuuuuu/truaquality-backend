@@ -16,9 +16,14 @@ one.
 
 Current surface area:
 - `/health`, `/health/db`
-- `/auth/login`, `/auth/refresh`
+- `/auth/login`, `/auth/refresh`, `/auth/logout`
 - `/me` (protected)
-- `/admin/*` (admin only): user invites, resend invite, user enable/disable
+- `/ponds`, `/ponds/:id`, `/ponds/:id/readings`, `/devices` (protected, any role)
+- `/admin/*` (admin only): user invites, resend invite, user enable/disable; `/admin/ponds` (create, rename,
+  archive); `/admin/devices` (register, assign to pond, disable, rotate secret)
+- **MQTT, not HTTP, for device data:** on startup the backend subscribes to
+  `truaquality/v1/devices/+/readings` on HiveMQ Cloud (`src/lib/readingsSubscriber.ts`). ESP32 units publish
+  signed readings there; there is no HTTP ingest route.
 
 ## Commands
 
@@ -111,6 +116,10 @@ resolution of `tsc`/`tsx`/`ts-node`:
   3. If the DB write fails, delete the Supabase user so no orphaned login remains.
   The invite link lands on `INVITE_REDIRECT_URL` (a frontend page where the user sets a password). That URL
   must be in Supabase's allowed redirect URLs.
+- `npm run simulate:devices -- --device <deviceId>:<deviceSecret> [--device ...] [--interval 60]`
+  (`scripts/simulate-devices.ts`) is **dev only**: it publishes synthetic, correctly signed readings to the
+  MQTT broker as if it were ESP32 units, so the multi-pond UI can be tested before hardware is installed. Never
+  point it at a production broker.
 - `npm run seed:admin` (`scripts/seed-admin.ts`) bootstraps the first admin the same way. It is
   idempotent: an existing profile just gets promoted.
 - Inviting real users requires **custom SMTP** in Supabase. The built-in mailer is heavily rate-limited.
@@ -134,12 +143,61 @@ new logins and token refresh.
 `src/middleware/requireAdmin.ts` returns `403` unless `req.profile.systemRole === "ADMIN"`. It's applied to
 the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
 
+### Ponds, devices, and readings
+
+- `Pond`: one monitored fishpond. Archived (`status: ARCHIVED`), never deleted, so its history survives.
+  A pond can't be archived while a device is assigned to it.
+- `Device`: one ESP32 sensor unit, at most one per pond (`pondId` is `@unique`, nullable).
+  - **The device never knows its pond.** Firmware only holds its device id and secret. Ingest resolves the
+    pond from `Device.pondId`, so moving hardware between ponds is an admin reassignment, not a reflash.
+- **Device authentication is per message, not per broker login.**
+  - HiveMQ Cloud's free (Serverless) tier gives every MQTT credential access to all topics, and its credentials
+    can only be created by hand in the console. So all units share one broker credential, and the broker
+    proves nothing about who published.
+  - Each message is `v1.<hex HMAC-SHA256>.<JSON body>`, with the HMAC over `<topic>\n<body>`
+    (`src/lib/deviceMessages.ts`). The firmware (`firmware/lib/Uplink`) and the simulator must match it
+    exactly.
+  - **Secrets are derived, not stored** (`src/lib/deviceSecrets.ts`): HMAC(`DEVICE_SECRET_MASTER_KEY`,
+    `device-secret:<id>:<secretVersion>`).
+    - Rotating a device bumps `secretVersion`.
+    - Changing the master key invalidates every unit at once, so every unit must be reflashed.
+    - The API returns credentials only from `POST /admin/devices` and `POST /admin/devices/:id/rotate-secret`.
+  - Order in `readingsSubscriber.ts`: parse the topic, look up the device, **verify the signature**, check it
+    isn't disabled, rate limit (30 messages/min per device, counted only after verification), validate, then
+    ingest. Nothing, not even `lastSeenAt`, is written for an unverified message. Dropped messages are logged
+    with a reason.
+  - Anyone with the shared broker credential can *read* every unit's readings (the topics aren't
+    confidential), but can't forge them. Replaying a captured message is harmless: duplicates are skipped, and
+    samples older than `Device.assignedAt` are refused.
+- `Reading`: **narrow table**, one row per parameter per sample (`parameter` is a string id).
+  - Adding a sensor parameter needs no migration: add it to `PARAMETER_BOUNDS` in `src/lib/parameters.ts`
+    (physical sanity limits for rejecting garbage) and to `PARAMETERS` in the frontend (display ranges).
+  - `pondId` is copied at ingest time, so readings stay with the pond they were measured in after a device
+    is reassigned.
+  - `@@unique([deviceId, parameter, recordedAt])` + `createMany({ skipDuplicates: true })` makes device
+    retries idempotent.
+  - Ingest logic lives in `src/lib/ingest.ts`, separate from the MQTT transport.
+    - Values that are out of bounds or unknown, recorded before the device's current `assignedAt`, or older
+      than 7 days are dropped one at a time (and logged); the rest of the batch is still stored.
+    - An unassigned device's readings are dropped, but its `lastSeenAt` is still updated so admins can see it's
+      online.
+    - Ingest writes no `AuditLog` rows (it's once a minute per device); admin pond/device changes do.
+  - The subscriber speaks MQTT 3.1.1 (like the units) with a persistent session (`clean: false`), so the broker
+    can hold QoS 1 readings while the backend restarts. `MQTT_CLIENT_ID` must be unique per running backend process.
+- **Latest value per parameter** (`GET /ponds`, `GET /ponds/:id`) uses a raw `LATERAL ... LIMIT 1` per
+  (pond, parameter) so it walks the `(pondId, parameter, recordedAt DESC)` index. Don't replace it with
+  Prisma's `distinct`, which de-duplicates in memory, or `DISTINCT ON`, which reads every row for the pond.
+- `adminPondsRouter` / `adminDevicesRouter` are mounted **inside** `adminRouter`, which already applies
+  `requireAuth` + `requireAdmin`. Mounting them separately under `/admin` would run auth twice.
+
 ### Request validation (Zod)
 
 - Schemas live in `src/schemas/`.
-- `validate(schema, source)` in `src/middleware/validate.ts` checks `req.body` (default) or `req.params` and
-  returns `400` with field-level errors.
+- `validate(schema, source)` in `src/middleware/validate.ts` checks `req.body` (default), `req.params`, or
+  `req.query` and returns `400` with field-level errors.
   - For `body`, it replaces `req.body` with the parsed data.
+  - For `query`, the parsed data goes on `res.locals.query`, because Express 5's `req.query` is a read-only
+    getter.
   - Validate uuid route params with `validate(userIdParams, "params")`.
 - This project is on **Zod v4**:
   - Use `z.flattenError(err)`, not the deprecated `.flatten()` method.
@@ -153,6 +211,13 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
 - `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`: Supabase dashboard → Project Settings → API Keys
 - `SUPABASE_SECRET_KEY`: same page, "Secret keys". **Server-only.**
 - `INVITE_REDIRECT_URL`: frontend page the invite email links to
+- `MQTT_URL`: the HiveMQ Cloud cluster, e.g. `mqtts://<cluster-id>.s1.eu.hivemq.cloud:8883`
+- `MQTT_USERNAME`, `MQTT_PASSWORD`: a HiveMQ credential for the backend (console → Access Management).
+  Create it separately from the credential the units share.
+- `MQTT_CLIENT_ID` (optional, default `truaquality-backend`): must differ between local dev and a deployed
+  backend.
+- `DEVICE_SECRET_MASTER_KEY`: at least 32 random characters, **server-only**. Every device secret is derived
+  from it. Generate one with `node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"`.
 
 **Email confirmation** is currently disabled in Supabase (Authentication → Providers → Email → "Confirm
 email"). Invited users confirm their email by opening the invite link either way. Re-enable it before
@@ -160,5 +225,6 @@ production.
 
 ## Known follow-ups (not yet built)
 
-- Ponds, IoT devices, and sensor readings (all belonging to BFAR Sorsogon), with role-based permissions.
+- Finer-grained roles for pond/device management (today: any signed-in user reads, only `ADMIN` writes).
+- Reading retention/downsampling for long history ranges (`/ponds/:id/readings` caps at 1000 rows).
 - Frontend accept-invite page (at `INVITE_REDIRECT_URL`) that sets the password via `supabase.auth.updateUser`.

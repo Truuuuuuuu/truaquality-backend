@@ -1,7 +1,7 @@
 import type { NextFunction, Request, Response } from "express";
 import { z, type ZodType } from "zod";
 
-export function validate<T>(schema: ZodType<T>, source: "body" | "params" = "body") {
+export function validate<T>(schema: ZodType<T>, source: "body" | "params" | "query" = "body") {
   return (req: Request, res: Response, next: NextFunction) => {
     const result = schema.safeParse(req[source]);
     if (!result.success) {
@@ -12,6 +12,10 @@ export function validate<T>(schema: ZodType<T>, source: "body" | "params" = "bod
     }
     if (source === "body") {
       req.body = result.data;
+    }
+    // Express 5 makes req.query a read-only getter, so the parsed (coerced, defaulted) query goes here.
+    if (source === "query") {
+      res.locals.query = result.data;
     }
     next();
   };

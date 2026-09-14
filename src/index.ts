@@ -5,6 +5,9 @@ import { prisma } from "./lib/prisma.ts";
 import { requireAuth } from "./middleware/requireAuth.ts";
 import { adminRouter } from "./routes/admin.ts";
 import { authRouter } from "./routes/auth.ts";
+import { startReadingsSubscriber } from "./lib/readingsSubscriber.ts";
+import { devicesRouter } from "./routes/devices.ts";
+import { pondsRouter } from "./routes/ponds.ts";
 
 const app = express();
 const port = process.env.PORT ?? 3000;
@@ -38,6 +41,8 @@ app.get("/health/db", async (_req, res) => {
 
 app.use("/auth", authRouter);
 app.use("/admin", adminRouter);
+app.use("/ponds", pondsRouter);
+app.use("/devices", devicesRouter);
 
 app.get("/me", requireAuth, (req, res) => {
   res.json({ profile: req.profile });
@@ -52,3 +57,6 @@ app.use(errorHandler);
 app.listen(port, () => {
   console.log(`Server listening on port ${port}`);
 });
+
+// Devices don't call the HTTP API: they publish signed readings to the MQTT broker, and this picks them up.
+startReadingsSubscriber();

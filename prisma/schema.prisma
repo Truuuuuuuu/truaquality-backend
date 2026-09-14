@@ -50,3 +50,65 @@ model AuditLog {
   @@index([targetType, targetId])
   @@index([actorId])
 }
+
+enum PondStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum DeviceStatus {
+  ACTIVE
+  DISABLED
+}
+
+// Ponds are archived, never deleted, so their reading history stays intact.
+model Pond {
+  id        String     @id @default(uuid()) @db.Uuid
+  name      String     @unique
+  notes     String?
+  status    PondStatus @default(ACTIVE)
+  device    Device?
+  readings  Reading[]
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+}
+
+// One ESP32 sensor unit. It signs every MQTT message with a secret derived from DEVICE_SECRET_MASTER_KEY, its
+// id, and secretVersion (nothing secret is stored; rotating bumps the version). It never knows its pond —
+// ingest resolves the pond from pondId, so moving hardware is a reassignment.
+model Device {
+  id              String       @id @default(uuid()) @db.Uuid
+  serial          String       @unique
+  hardwareModel   String?
+  label           String?
+  secretVersion   Int          @default(1)
+  status          DeviceStatus @default(ACTIVE)
+  pondId          String?      @unique @db.Uuid
+  pond            Pond?        @relation(fields: [pondId], references: [id], onDelete: SetNull)
+  // When the device was last put on its current pond. Samples recorded earlier are refused, so a captured
+  // message can't be replayed into the pond the device was moved to.
+  assignedAt      DateTime?
+  firmwareVersion String?
+  lastSeenAt      DateTime?
+  readings        Reading[]
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+}
+
+// One row per parameter per sample, so adding a sensor parameter needs no migration. pondId is copied at
+// ingest time so history stays with the pond it was measured in after a device is reassigned.
+model Reading {
+  id         BigInt   @id @default(autoincrement())
+  pondId     String   @db.Uuid
+  pond       Pond     @relation(fields: [pondId], references: [id], onDelete: Restrict)
+  deviceId   String   @db.Uuid
+  device     Device   @relation(fields: [deviceId], references: [id], onDelete: Restrict)
+  parameter  String
+  value      Float
+  recordedAt DateTime
+  receivedAt DateTime @default(now())
+
+  // Lets a device safely retry an upload: duplicates are skipped instead of double-counted.
+  @@unique([deviceId, parameter, recordedAt])
+  @@index([pondId, parameter, recordedAt(sort: Desc)])
+}

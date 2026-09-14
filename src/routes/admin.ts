@@ -7,6 +7,8 @@ import { requireAdmin } from "../middleware/requireAdmin.ts";
 import { requireAuth } from "../middleware/requireAuth.ts";
 import { validate } from "../middleware/validate.ts";
 import { inviteUserSchema, updateStatusSchema, userIdParams } from "../schemas/admin.ts";
+import { adminDevicesRouter } from "./adminDevices.ts";
+import { adminPondsRouter } from "./adminPonds.ts";
 
 const inviteRedirectUrl = process.env.INVITE_REDIRECT_URL;
 if (!inviteRedirectUrl) {
@@ -16,6 +18,9 @@ if (!inviteRedirectUrl) {
 export const adminRouter = Router();
 
 adminRouter.use(requireAuth, requireAdmin);
+
+adminRouter.use("/ponds", adminPondsRouter);
+adminRouter.use("/devices", adminDevicesRouter);
 
 adminRouter.post("/users", validate(inviteUserSchema), async (req, res) => {
   const { email, fullName, systemRole } = req.body;
