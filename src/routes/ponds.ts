@@ -78,14 +78,19 @@ pondsRouter.get("/:id", validate(pondIdParams, "params"), async (req, res) => {
 
 // Newest-first, keyset-paginated log of raw readings (what the pond detail page's history table shows).
 // `before`, from a previous page's `nextCursor`, resumes past that row; omit it for the first page. Only
-// reaches back as far as raw retention goes — see /series and /readings/export for longer ranges.
+// reaches back as far as raw retention goes — see /series and /readings/export for longer ranges. `from`/`to`
+// narrow the scan to a date/time range; the cursor still walks page to page within that range.
 pondsRouter.get(
   "/:id/readings",
   validate(pondIdParams, "params"),
   validate(readingsPageQuery, "query"),
   async (req, res) => {
     const { id } = req.params as z.infer<typeof pondIdParams>;
-    const { parameter, before, limit } = res.locals.query as z.infer<typeof readingsPageQuery>;
+    const { parameter, before, limit, from, to } = res.locals.query as z.infer<typeof readingsPageQuery>;
+
+    if (from && to && from > to) {
+      return res.status(400).json({ error: "from must be before to" });
+    }
 
     const pond = await prisma.pond.findUnique({ where: { id }, select: { id: true } });
     if (!pond) {
@@ -102,6 +107,7 @@ pondsRouter.get(
       where: {
         pondId: id,
         parameter,
+        ...(from || to ? { recordedAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {}),
         ...(cursor
           ? {
               OR: [

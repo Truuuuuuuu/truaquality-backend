@@ -18,9 +18,12 @@ const isoDate = z.iso.datetime({ offset: true }).transform((value) => new Date(v
 
 // Keyset pagination for /:id/readings: `before` is an opaque cursor from a previous page's `nextCursor`,
 // not a raw timestamp, so a client can't be tempted to hand-craft one that skips the tie-breaking id.
+// `from`/`to` narrow the scan to a date/time range; the cursor still walks within that range.
 export const readingsPageQuery = z.object({
   parameter: z.enum(PARAMETER_IDS).optional(),
   before: z.string().optional(),
+  from: isoDate.optional(),
+  to: isoDate.optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
 });
 
