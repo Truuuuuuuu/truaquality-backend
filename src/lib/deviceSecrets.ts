@@ -17,7 +17,8 @@ export function deriveDeviceSecret(deviceId: string, secretVersion: number) {
   return createHmac("sha256", masterKey).update(`device-secret:${deviceId}:${secretVersion}`).digest("base64url");
 }
 
-// What an admin flashes into a unit. Only returned when a device is registered or its secret is rotated.
+// What an admin enters on the unit's setup portal (no reflash — see firmware/CLAUDE.md's "Field
+// provisioning"). Only returned when a device is registered or its secret is rotated.
 export function deviceCredentials(device: { id: string; secretVersion: number }) {
   return {
     deviceId: device.id,
