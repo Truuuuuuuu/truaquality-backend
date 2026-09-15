@@ -29,7 +29,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
 
   // Checked on every request so disabling a user takes effect before their JWT expires.
   let profile = await prisma.profile.findUnique({ where: { id: data.claims.sub } });
-  if (!profile || profile.status === "DISABLED") {
+  if (!profile || profile.status === "DISABLED" || profile.status === "DELETED") {
     return res.status(403).json({ error: "account is not provisioned or has been disabled" });
   }
 

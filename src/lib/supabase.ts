@@ -8,3 +8,13 @@ if (!supabaseUrl || !supabasePublishableKey) {
 }
 
 export const supabase = createClient(supabaseUrl, supabasePublishableKey);
+
+// Uses a throwaway, non-persisting client so the session a successful check creates never lands on the
+// shared client above.
+export async function verifyPassword(userId: string, email: string, password: string) {
+  const client = createClient(supabaseUrl!, supabasePublishableKey!, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const { data, error } = await client.auth.signInWithPassword({ email, password });
+  return !error && data.user?.id === userId;
+}

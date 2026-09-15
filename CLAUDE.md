@@ -17,7 +17,7 @@ one.
 Current surface area:
 - `/health`, `/health/db`
 - `/auth/login`, `/auth/refresh`, `/auth/logout`
-- `/me` (protected)
+- `/me` (protected): `GET` own profile, `DELETE` own account (password-confirmed, see "Identity model")
 - `/ponds`, `/ponds/:id`, `/ponds/:id/readings` (paginated), `/ponds/:id/series`, `/ponds/:id/readings/export`
   (.xlsx), `/devices` (protected, any role)
 - `/notifications` (protected, caller's own only): list (keyset-paginated, includes `unreadCount`),
@@ -105,8 +105,17 @@ resolution of `tsc`/`tsx`/`ts-node`:
 - `Profile`: one row per provisioned user.
   - `id` equals Supabase's `auth.users.id`. There are no password fields; Supabase Auth keeps credentials.
   - `systemRole`: `ADMIN` | `USER`.
-  - `status`: `INVITED` (invite sent, not accepted) → `ACTIVE` (first authenticated request) → `DISABLED`.
-- `AuditLog` records admin actions such as `user.invite`, `user.disable`, and `user.promote_admin`. Write it
+  - `status`: `INVITED` (invite sent, not accepted) → `ACTIVE` (first authenticated request) → `DISABLED`,
+    or `DELETED`.
+- **Account deletion is self-service and anonymizes, it doesn't remove the row.** `DELETE /me`
+  (`src/routes/me.ts`) re-verifies the caller's password server-side (`verifyPassword` in
+  `src/lib/supabase.ts`, behind `loginRateLimit`), deletes the Supabase login, then in one transaction
+  deletes their notifications, sets `status: DELETED` + `deletedAt`, and replaces `fullName`/`email` with
+  placeholders (the email becomes `deleted-<id>@deleted.invalid`, freeing the real one for a re-invite).
+  Admin accounts can't be deleted. `requireAuth` rejects `DELETED` like `DISABLED`, `GET /admin/users` hides
+  them, and the admin status route treats them as not found.
+- `AuditLog` records admin actions such as `user.invite`, `user.disable`, and `user.promote_admin`, plus
+  `user.delete_self` (the one non-admin action; its metadata keeps the original email). Write it
   through `logAudit()` in `src/lib/audit.ts`, inside the same `$transaction` as the change it records. Older
   rows may still carry pre-refactor actions (`office.*`, `user.promote_super_admin`); they're history, leave
   them.

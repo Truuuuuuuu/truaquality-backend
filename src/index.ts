@@ -2,9 +2,9 @@ import "dotenv/config";
 import cors from "cors";
 import express, { type ErrorRequestHandler } from "express";
 import { prisma } from "./lib/prisma.ts";
-import { requireAuth } from "./middleware/requireAuth.ts";
 import { adminRouter } from "./routes/admin.ts";
 import { authRouter } from "./routes/auth.ts";
+import { meRouter } from "./routes/me.ts";
 import { startReadingRollup } from "./lib/readingRollup.ts";
 import { startReadingsSubscriber } from "./lib/readingsSubscriber.ts";
 import { devicesRouter } from "./routes/devices.ts";
@@ -52,10 +52,7 @@ app.use("/admin", adminRouter);
 app.use("/ponds", pondsRouter);
 app.use("/devices", devicesRouter);
 app.use("/notifications", notificationsRouter);
-
-app.get("/me", requireAuth, (req, res) => {
-  res.json({ profile: req.profile });
-});
+app.use("/me", meRouter);
 
 const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
   console.error(err);

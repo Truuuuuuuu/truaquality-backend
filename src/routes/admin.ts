@@ -66,7 +66,10 @@ adminRouter.post("/users", validate(inviteUserSchema), async (req, res) => {
 });
 
 adminRouter.get("/users", async (_req, res) => {
-  const profiles = await prisma.profile.findMany({ orderBy: { createdAt: "desc" } });
+  const profiles = await prisma.profile.findMany({
+    where: { status: { not: "DELETED" } },
+    orderBy: { createdAt: "desc" },
+  });
   res.json({ profiles });
 });
 
@@ -84,8 +87,12 @@ adminRouter.patch(
     }
 
     const target = await prisma.profile.findUnique({ where: { id } });
-    if (!target) {
+    // A deleted profile has no Supabase login left, so re-enabling it would revive an account nobody can use.
+    if (!target || target.status === "DELETED") {
       return res.status(404).json({ error: "user not found" });
+    }
+    if (status === "DISABLED" && target.systemRole === "ADMIN") {
+      return res.status(400).json({ error: "admins cannot be disabled" });
     }
     if (status === "ACTIVE" && target.status !== "DISABLED") {
       return res.status(409).json({ error: "only disabled users can be re-enabled" });
