@@ -20,6 +20,8 @@ Current surface area:
 - `/me` (protected)
 - `/ponds`, `/ponds/:id`, `/ponds/:id/readings` (paginated), `/ponds/:id/series`, `/ponds/:id/readings/export`
   (.xlsx), `/devices` (protected, any role)
+- `/notifications` (protected, caller's own only): list (keyset-paginated, includes `unreadCount`),
+  `POST /notifications/:id/read`, `POST /notifications/read-all`
 - `/admin/*` (admin only): user invites, resend invite, user enable/disable; `/admin/ponds` (create, rename,
   archive); `/admin/devices` (register, assign to pond, disable, rotate secret)
 - **MQTT, not HTTP, for device data:** on startup the backend subscribes to
@@ -202,8 +204,9 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
     the unit (e.g. `27.6 °C`) without turning the value into text.
 - `Reading`: **narrow table**, one row per parameter per sample (`parameter` is a string id).
   - Adding a sensor parameter needs no migration: add it to `PARAMETER_BOUNDS` in `src/lib/parameters.ts`
-    (physical sanity limits for rejecting garbage), to `PARAMETER_DISPLAY` in the same file (label/unit/
-    precision for the `.xlsx` export), and to `PARAMETERS` in the frontend (display ranges).
+    (physical sanity limits for rejecting garbage), to `PARAMETER_THRESHOLDS` and `PARAMETER_DISPLAY` in the
+    same file (alert ranges; label/unit/precision for the `.xlsx` export), and to `PARAMETERS` in the frontend
+    (display ranges, which must match `PARAMETER_THRESHOLDS`).
   - `pondId` is copied at ingest time, so readings stay with the pond they were measured in after a device
     is reassigned.
   - `@@unique([deviceId, parameter, recordedAt])` + `createMany({ skipDuplicates: true })` makes device
@@ -216,6 +219,20 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
     - Ingest writes no `AuditLog` rows (it's once a minute per device); admin pond/device changes do.
   - The subscriber speaks MQTT 3.1.1 (like the units) with a persistent session (`clean: false`), so the broker
     can hold QoS 1 readings while the backend restarts. `MQTT_CLIENT_ID` must be unique per running backend process.
+- **Alerts and notifications** (`src/lib/alerts.ts`). After ingest stores new readings, `evaluatePondAlerts()`
+  re-checks each touched parameter against `PARAMETER_THRESHOLDS` in `src/lib/parameters.ts` (the safe/critical
+  ranges — a copy of the frontend's, keep them in sync).
+  - An `Alert` is one out-of-range **episode** per pond/parameter, not one row per bad reading: opened by the first
+    abnormal reading, escalated at most once (WARNING → CRITICAL; severity never steps back down), and resolved
+    only after readings have stayed in range for `ALERT_RECOVERY_MS` (10 min), so a value hovering on a threshold
+    doesn't flap. Each open/escalate/resolve fans out one `Notification` row per `ACTIVE` profile (per-user read
+    state).
+  - It always evaluates the pond's **newest stored** reading, never the incoming batch, and skips anything not
+    newer than `Alert.lastRecordedAt` — so duplicates and late backlog uploads can't reopen or resolve out of
+    order.
+  - Each evaluation runs in a transaction holding `pg_advisory_xact_lock(hashtext('alert:<pond>:<parameter>'))`,
+    because MQTT messages are handled concurrently and two must not both open an alert.
+  - A failure here is logged (`[alerts]`) and doesn't fail ingest; the readings are already stored.
 - **Latest value per parameter** (`GET /ponds`, `GET /ponds/:id`) uses a raw `LATERAL ... LIMIT 1` per
   (pond, parameter) so it walks the `(pondId, parameter, recordedAt DESC)` index. Don't replace it with
   Prisma's `distinct`, which de-duplicates in memory, or `DISTINCT ON`, which reads every row for the pond.

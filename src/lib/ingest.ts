@@ -1,7 +1,8 @@
 import type { z } from "zod";
 import type { Device, Prisma } from "../generated/prisma/client.ts";
 import type { ingestSchema } from "../schemas/ingest.ts";
-import { PARAMETER_BOUNDS, isParameterId } from "./parameters.ts";
+import { evaluatePondAlerts } from "./alerts.ts";
+import { PARAMETER_BOUNDS, isParameterId, type ParameterId } from "./parameters.ts";
 import { prisma } from "./prisma.ts";
 
 // A unit buffers at most a couple of hours offline; anything much older is a broken clock or a replay.
@@ -33,6 +34,7 @@ export async function ingestSamples(
 
   const rows: Prisma.ReadingCreateManyInput[] = [];
   const rejected: RejectedValue[] = [];
+  const storedParameters = new Set<ParameterId>();
   for (const sample of message.samples) {
     const recordedAt = sample.recordedAt ?? receivedAt;
     // A null value means "this sensor had nothing to report" — the same thing an omitted key means. It's
@@ -63,9 +65,18 @@ export async function ingestSamples(
         continue;
       }
       rows.push({ pondId: device.pondId, deviceId: device.id, parameter, value, recordedAt, receivedAt });
+      storedParameters.add(parameter);
     }
   }
 
   const { count } = await prisma.reading.createMany({ data: rows, skipDuplicates: true });
+
+  // The readings are already stored at this point, so an alerting failure is logged rather than reported as a
+  // failed ingest (which would only make the unit's retry a duplicate). All-duplicate batches change nothing.
+  if (count > 0) {
+    await evaluatePondAlerts(device.pondId, storedParameters).catch((err) =>
+      console.error(`[alerts] evaluation failed for pond ${device.pondId}:`, err),
+    );
+  }
   return { status: "stored", accepted: count, duplicates: rows.length - count, rejected };
 }

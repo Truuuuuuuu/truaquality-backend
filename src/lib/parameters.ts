@@ -14,6 +14,26 @@ export function isParameterId(value: string): value is ParameterId {
   return Object.hasOwn(PARAMETER_BOUNDS, value);
 }
 
+// Safe/critical ranges that raise alerts (lib/alerts.ts). Unlike PARAMETER_BOUNDS, a value outside these is a
+// real reading worth acting on, not garbage. The frontend colors tiles by its own copy in src/lib/parameters.ts
+// (safeMin/safeMax/criticalMin/criticalMax) — keep both in sync, or a notification will disagree with the board.
+export const PARAMETER_THRESHOLDS: Record<
+  ParameterId,
+  { safeMin: number; safeMax: number; criticalMin: number; criticalMax: number }
+> = {
+  temperature: { safeMin: 26, safeMax: 31, criticalMin: 24, criticalMax: 33 },
+  dissolvedOxygen: { safeMin: 5, safeMax: 9, criticalMin: 3, criticalMax: 11 },
+  salinity: { safeMin: 10, safeMax: 25, criticalMin: 5, criticalMax: 32 },
+};
+
+// Same rule as the frontend's severityFor; null means the value is within the safe range.
+export function severityFor(parameter: ParameterId, value: number): "WARNING" | "CRITICAL" | null {
+  const { safeMin, safeMax, criticalMin, criticalMax } = PARAMETER_THRESHOLDS[parameter];
+  if (value < criticalMin || value > criticalMax) return "CRITICAL";
+  if (value < safeMin || value > safeMax) return "WARNING";
+  return null;
+}
+
 // Display metadata for report-facing output (currently just the .xlsx export in routes/ponds.ts) — the
 // dashboard itself is rendered by the frontend, which keeps its own copy in src/lib/parameters.ts. Keep the
 // label/unit/precision here and there in sync; a parameter id must exist in both.

@@ -8,6 +8,7 @@ import { authRouter } from "./routes/auth.ts";
 import { startReadingRollup } from "./lib/readingRollup.ts";
 import { startReadingsSubscriber } from "./lib/readingsSubscriber.ts";
 import { devicesRouter } from "./routes/devices.ts";
+import { notificationsRouter } from "./routes/notifications.ts";
 import { pondsRouter } from "./routes/ponds.ts";
 
 const app = express();
@@ -50,6 +51,7 @@ app.use("/auth", authRouter);
 app.use("/admin", adminRouter);
 app.use("/ponds", pondsRouter);
 app.use("/devices", devicesRouter);
+app.use("/notifications", notificationsRouter);
 
 app.get("/me", requireAuth, (req, res) => {
   res.json({ profile: req.profile });

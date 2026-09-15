@@ -25,16 +25,17 @@ enum ProfileStatus {
 
 // id mirrors Supabase auth.users.id; credentials live in Supabase Auth, not here.
 model Profile {
-  id          String        @id @db.Uuid
-  email       String        @unique
-  fullName    String
-  systemRole  SystemRole    @default(USER)
-  status      ProfileStatus @default(INVITED)
-  invitedById String?       @db.Uuid
-  invitedBy   Profile?      @relation("ProfileInvites", fields: [invitedById], references: [id], onDelete: SetNull)
-  invitees    Profile[]     @relation("ProfileInvites")
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  id            String         @id @db.Uuid
+  email         String         @unique
+  fullName      String
+  systemRole    SystemRole     @default(USER)
+  status        ProfileStatus  @default(INVITED)
+  invitedById   String?        @db.Uuid
+  invitedBy     Profile?       @relation("ProfileInvites", fields: [invitedById], references: [id], onDelete: SetNull)
+  invitees      Profile[]      @relation("ProfileInvites")
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  notifications Notification[]
 }
 
 // No FK on actorId so audit rows survive profile deletion.
@@ -70,6 +71,7 @@ model Pond {
   device         Device?
   readings       Reading[]
   readingsHourly ReadingHourly[]
+  alerts         Alert[]
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
 }
@@ -130,4 +132,58 @@ model ReadingHourly {
   count       Int
 
   @@id([pondId, parameter, bucketStart])
+}
+
+enum AlertSeverity {
+  WARNING
+  CRITICAL
+}
+
+enum NotificationKind {
+  ALERT_OPENED
+  ALERT_ESCALATED
+  ALERT_RESOLVED
+}
+
+// One out-of-range episode for a pond's parameter, from its first abnormal reading until readings have stayed
+// in range for a while (lib/alerts.ts). Readings arrive every minute, so notifying per episode — not per
+// reading — is what keeps a bad afternoon from becoming hundreds of notifications.
+model Alert {
+  id             String         @id @default(uuid()) @db.Uuid
+  pondId         String         @db.Uuid
+  pond           Pond           @relation(fields: [pondId], references: [id], onDelete: Restrict)
+  parameter      String
+  // The worst severity reached during the episode; it never steps back down, so it escalates at most once.
+  severity       AlertSeverity
+  openedAt       DateTime
+  // The newest reading evaluated against this alert, so a re-delivered or older reading is never re-applied.
+  lastValue      Float
+  lastRecordedAt DateTime
+  // Set by the first in-range reading after an abnormal one, cleared if the value leaves the range again.
+  nominalSince   DateTime?
+  resolvedAt     DateTime?
+  notifications  Notification[]
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@index([pondId, parameter, resolvedAt])
+}
+
+// One row per recipient per alert event, so each user has their own read state. value/recordedAt/severity
+// are a snapshot of the reading that caused the event; the alert itself keeps moving.
+model Notification {
+  id         String           @id @default(uuid()) @db.Uuid
+  profileId  String           @db.Uuid
+  profile    Profile          @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  alertId    String           @db.Uuid
+  alert      Alert            @relation(fields: [alertId], references: [id], onDelete: Cascade)
+  kind       NotificationKind
+  severity   AlertSeverity
+  value      Float
+  recordedAt DateTime
+  readAt     DateTime?
+  createdAt  DateTime         @default(now())
+
+  @@index([profileId, createdAt(sort: Desc), id(sort: Desc)])
+  @@index([profileId, readAt])
 }
