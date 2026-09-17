@@ -25,8 +25,9 @@ async function notifyActiveUsers(tx: Prisma.TransactionClient, event: AlertEvent
 }
 
 // Re-evaluates one pond parameter's alert against its newest stored reading — not the incoming batch, so a
-// buffered backlog of older samples can never open or resolve an alert out of order.
-async function evaluateParameter(pondId: string, parameter: ParameterId) {
+// buffered backlog of older samples can never open or resolve an alert out of order. `pondType` decides which
+// threshold set applies (fresh water is nominal at 0 ppt, brackish is not).
+async function evaluateParameter(pondId: string, parameter: ParameterId, pondType: string | null) {
   await prisma.$transaction(async (tx) => {
     // MQTT messages are handled concurrently; two of them must not both see "no open alert" and open one each.
     // Transaction-scoped for the same pgbouncer reason as the rollup job's lock (readingRollup.ts).
@@ -39,7 +40,7 @@ async function evaluateParameter(pondId: string, parameter: ParameterId) {
     });
     if (!latest) return;
     const { value, recordedAt } = latest;
-    const severity = severityFor(parameter, value);
+    const severity = severityFor(parameter, value, pondType);
 
     const open = await tx.alert.findFirst({ where: { pondId, parameter, resolvedAt: null } });
 
@@ -88,7 +89,10 @@ async function evaluateParameter(pondId: string, parameter: ParameterId) {
 // Opens, escalates, or resolves alerts for the parameters a pond just stored readings for. One transaction per
 // parameter, so a failure on one doesn't hold back the others.
 export async function evaluatePondAlerts(pondId: string, parameters: Iterable<ParameterId>) {
+  // Read once here rather than inside each per-parameter transaction: the pond's type is the same for all of
+  // them, and this runs on every ingested batch.
+  const pond = await prisma.pond.findUnique({ where: { id: pondId }, select: { pondType: true } });
   for (const parameter of parameters) {
-    await evaluateParameter(pondId, parameter);
+    await evaluateParameter(pondId, parameter, pond?.pondType ?? null);
   }
 }

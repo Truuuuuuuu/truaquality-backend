@@ -23,7 +23,8 @@ Current surface area:
 - `/notifications` (protected, caller's own only): list (keyset-paginated, includes `unreadCount`),
   `POST /notifications/:id/read`, `POST /notifications/read-all`
 - `/admin/*` (admin only): user invites, resend invite, user enable/disable; `/admin/ponds` (create, rename,
-  archive); `/admin/devices` (register, assign to pond, disable, rotate secret)
+  archive); `/admin/devices` (register, assign to pond, disable, rotate secret); `/admin/audit`
+  (keyset-paginated read of `AuditLog`, filterable by `action`/`targetType`/`actorId`/date range)
 - **MQTT, not HTTP, for device data:** on startup the backend subscribes to
   `truaquality/v1/devices/+/readings` on HiveMQ Cloud (`src/lib/readingsSubscriber.ts`). ESP32 units publish
   signed readings there; there is no HTTP ingest route.
@@ -119,6 +120,11 @@ resolution of `tsc`/`tsx`/`ts-node`:
   through `logAudit()` in `src/lib/audit.ts`, inside the same `$transaction` as the change it records. Older
   rows may still carry pre-refactor actions (`office.*`, `user.promote_super_admin`); they're history, leave
   them.
+  - Read back through `GET /admin/audit`, which the frontend's `/audit` page renders. `actorId` deliberately
+    has **no foreign key** so a row outlives the profile it names — which rules out an `include`, so the
+    route resolves actor names in a second `profile.findMany({ where: { id: { in: ... } } })` and returns
+    `actor: null` when the profile is gone. Don't "fix" this by adding the FK; it would take the history
+    down with the user.
 
 ### Auth and account creation
 
@@ -213,9 +219,9 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
     the unit (e.g. `27.6 °C`) without turning the value into text.
 - `Reading`: **narrow table**, one row per parameter per sample (`parameter` is a string id).
   - Adding a sensor parameter needs no migration: add it to `PARAMETER_BOUNDS` in `src/lib/parameters.ts`
-    (physical sanity limits for rejecting garbage), to `PARAMETER_THRESHOLDS` and `PARAMETER_DISPLAY` in the
-    same file (alert ranges; label/unit/precision for the `.xlsx` export), and to `PARAMETERS` in the frontend
-    (display ranges, which must match `PARAMETER_THRESHOLDS`).
+    (physical sanity limits for rejecting garbage), to `PARAMETER_DISPLAY` in the same file
+    (label/unit/precision for the `.xlsx` export), to **every** profile in `PARAMETER_THRESHOLDS` (alert
+    ranges), and to `PARAMETERS` in the frontend (label/unit/precision only — it holds no ranges).
   - `pondId` is copied at ingest time, so readings stay with the pond they were measured in after a device
     is reassigned.
   - `@@unique([deviceId, parameter, recordedAt])` + `createMany({ skipDuplicates: true })` makes device
@@ -228,9 +234,19 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
     - Ingest writes no `AuditLog` rows (it's once a minute per device); admin pond/device changes do.
   - The subscriber speaks MQTT 3.1.1 (like the units) with a persistent session (`clean: false`), so the broker
     can hold QoS 1 readings while the backend restarts. `MQTT_CLIENT_ID` must be unique per running backend process.
+- **Thresholds depend on the pond's type, and the backend owns them.** `PARAMETER_THRESHOLDS` in
+  `src/lib/parameters.ts` is keyed by `FRESHWATER` / `BRACKISH` / `SALTWATER` / `UNSET` (for a pond whose
+  `pondType` is still null), because a single global salinity range made every freshwater pond permanently
+  `CRITICAL` — fresh water sits near 0 ppt, under the brackish `criticalMin` of 5, so the first reading opened
+  an alert that could never resolve and notified every user. Resolve with `thresholdsFor(pondType)` and judge
+  with `severityFor(parameter, value, pondType)`.
+  - **The frontend keeps no copy.** `GET /ponds` and `GET /ponds/:id` return a resolved `thresholds` map on
+    each pond, next to `latest`, so the board colors a reading with the same numbers that raised its alert.
+    `GET /notifications` likewise computes each row's `direction` (`"low"`/`"high"`) server-side. The one
+    exception is `SIGNED_OUT_THRESHOLDS` in the frontend, illustrative bands for the signed-out range key on
+    the auth pages, which have no pond and no token; nothing that judges a real reading may use it.
 - **Alerts and notifications** (`src/lib/alerts.ts`). After ingest stores new readings, `evaluatePondAlerts()`
-  re-checks each touched parameter against `PARAMETER_THRESHOLDS` in `src/lib/parameters.ts` (the safe/critical
-  ranges — a copy of the frontend's, keep them in sync).
+  reads the pond's `pondType` once, then re-checks each touched parameter against that type's thresholds.
   - An `Alert` is one out-of-range **episode** per pond/parameter, not one row per bad reading: opened by the first
     abnormal reading, escalated at most once (WARNING → CRITICAL; severity never steps back down), and resolved
     only after readings have stayed in range for `ALERT_RECOVERY_MS` (10 min), so a value hovering on a threshold
@@ -281,6 +297,11 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
   backend.
 - `DEVICE_SECRET_MASTER_KEY`: at least 32 random characters, **server-only**. Every device secret is derived
   from it. Generate one with `node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"`.
+- `TRUST_PROXY_HOPS` (optional, default `0`): how many reverse proxies sit in front of the process, passed to
+  Express's `trust proxy`. The rate limiters key on IP, so behind a PaaS router with this left at `0` every
+  request looks like the proxy and the login limit becomes one shared bucket for the whole office. Set it to
+  the real hop count — **never `true`**, which trusts the whole `X-Forwarded-For` chain and lets a client
+  forge an address to skip the limiter.
 - `MQTT_ENABLED` (optional, default effectively `true`): set to `"false"` to skip connecting to HiveMQ
   entirely — useful when working on UI/other features and you don't need live device data. The HTTP API
   still runs normally either way; only the MQTT subscriber is skipped.
@@ -301,5 +322,12 @@ production.
 
 ## Known follow-ups (not yet built)
 
+- **Device-offline detection.** `Device.lastSeenAt` is written in `src/lib/ingest.ts` and read by nothing on
+  the server. Alerting is entirely reading-driven — `evaluatePondAlerts()` only runs from ingest — so a device
+  that dies raises no alert, no notification and no log line; staleness is drawn client-side only
+  (`frontend/src/lib/pond-status.ts`). `PRODUCT.md` asks for this. It needs a migration
+  (`Notification.alertId` is a required FK to `Alert`, and `NotificationKind` has only the three `ALERT_*`
+  values) plus a watchdog job, which can copy `src/lib/readingRollup.ts` wholesale: started from
+  `app.listen()`'s callback, guarded by `pg_try_advisory_xact_lock`, with an `*_ENABLED` env flag.
 - Finer-grained roles for pond/device management (today: any signed-in user reads, only `ADMIN` writes).
-- Frontend accept-invite page (at `INVITE_REDIRECT_URL`) that sets the password via `supabase.auth.updateUser`.
+- No tests anywhere in the repo and no CI; `npm test` is still the npm placeholder.

@@ -2,7 +2,7 @@ import { Router } from "express";
 import type { z } from "zod";
 import { Prisma } from "../generated/prisma/client.ts";
 import { deviceSummarySelect } from "../lib/devices.ts";
-import { PARAMETER_IDS } from "../lib/parameters.ts";
+import { PARAMETER_IDS, thresholdsFor } from "../lib/parameters.ts";
 import { prisma } from "../lib/prisma.ts";
 import { rawRetentionDays } from "../lib/readingRollup.ts";
 import { streamReadingsExport, validateExportRange } from "../lib/readingsExport.ts";
@@ -16,6 +16,12 @@ import { pondIdParams, readingsExportQuery, readingsPageQuery, seriesQuery } fro
 // range would otherwise mean thousands of hourly points.
 const SERIES_RAW_MAX_RANGE_MS = 48 * 60 * 60 * 1000;
 const SERIES_HOURLY_MAX_RANGE_MS = 92 * 24 * 60 * 60 * 1000;
+
+// A hard ceiling on rows per response, independent of the range checks above. Those bound the
+// *window*, not the row count: at a 30 s sampling interval with `parameter` omitted, 48 h of raw
+// readings is already ~17k rows materialized in memory and serialized to JSON. 20k leaves headroom
+// over every legitimate query while stopping one request from trying to page the whole table.
+const SERIES_MAX_POINTS = 20_000;
 
 export const pondsRouter = Router();
 
@@ -58,7 +64,15 @@ pondsRouter.get("/", async (_req, res) => {
     include: { device: { select: deviceSummarySelect } },
   });
   const latest = await latestReadingsByPond(ponds.map((pond) => pond.id));
-  res.json({ ponds: ponds.map((pond) => ({ ...pond, latest: latest.get(pond.id) ?? {} })) });
+  // `thresholds` rides alongside `latest` so the dashboard colors a reading by the same numbers that raise
+  // its alerts, instead of keeping a second hand-synced copy of them in the frontend.
+  res.json({
+    ponds: ponds.map((pond) => ({
+      ...pond,
+      latest: latest.get(pond.id) ?? {},
+      thresholds: thresholdsFor(pond.pondType),
+    })),
+  });
 });
 
 pondsRouter.get("/:id", validate(pondIdParams, "params"), async (req, res) => {
@@ -73,7 +87,9 @@ pondsRouter.get("/:id", validate(pondIdParams, "params"), async (req, res) => {
   }
 
   const latest = await latestReadingsByPond([id]);
-  res.json({ pond: { ...pond, latest: latest.get(id) ?? {} } });
+  res.json({
+    pond: { ...pond, latest: latest.get(id) ?? {}, thresholds: thresholdsFor(pond.pondType) },
+  });
 });
 
 // Newest-first, keyset-paginated log of raw readings (what the pond detail page's history table shows).
@@ -159,6 +175,7 @@ pondsRouter.get(
       const rows = await prisma.reading.findMany({
         where: { pondId: id, parameter, recordedAt: { gte: from, lte: end } },
         orderBy: { recordedAt: "asc" },
+        take: SERIES_MAX_POINTS,
         select: { parameter: true, value: true, recordedAt: true },
       });
       return res.json({
@@ -171,6 +188,8 @@ pondsRouter.get(
       const rows = await prisma.readingHourly.findMany({
         where: { pondId: id, parameter, bucketStart: { gte: from, lte: end } },
         orderBy: { bucketStart: "asc" },
+        take: SERIES_MAX_POINTS,
+        select: { parameter: true, bucketStart: true, min: true, max: true, sum: true, count: true },
       });
       return res.json({
         resolution: "hour",

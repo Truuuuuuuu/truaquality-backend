@@ -9,6 +9,13 @@ import { prisma } from "./prisma.ts";
 // Exported so the rollup job (readingRollup.ts) knows how far back a "final" hour has to be.
 export const MAX_SAMPLE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
+// Units stamp samples from their own NTP-synced clock, so a little skew against ours is normal and a
+// lot of it is a broken clock. A future timestamp is far more damaging than an old one: it becomes
+// the pond's permanent "latest" reading, makes the dashboard's staleness check (now - recordedAt)
+// negative so the value never looks old, and parks Alert.lastRecordedAt in the future — after which
+// alerts.ts skips every real reading as "not newer" and that parameter's alerting never fires again.
+export const MAX_SAMPLE_SKEW_MS = 5 * 60 * 1000;
+
 export type RejectedValue = { recordedAt: Date; parameter: string; value: number; reason: string };
 
 export type IngestResult =
@@ -48,6 +55,8 @@ export async function ingestSamples(
       sampleProblem = "recorded before the device was assigned to this pond";
     } else if (receivedAt.getTime() - recordedAt.getTime() > MAX_SAMPLE_AGE_MS) {
       sampleProblem = "older than 7 days";
+    } else if (recordedAt.getTime() - receivedAt.getTime() > MAX_SAMPLE_SKEW_MS) {
+      sampleProblem = "recorded in the future (check the device clock)";
     }
     if (sampleProblem) {
       for (const [parameter, value] of values) rejected.push({ recordedAt, parameter, value, reason: sampleProblem });

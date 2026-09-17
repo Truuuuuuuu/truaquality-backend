@@ -1,6 +1,7 @@
 import { Router } from "express";
 import type { z } from "zod";
 import { decodeNotificationsCursor, encodeNotificationsCursor } from "../lib/notificationsCursor.ts";
+import { isParameterId, thresholdsFor } from "../lib/parameters.ts";
 import { prisma } from "../lib/prisma.ts";
 import { requireAuth } from "../middleware/requireAuth.ts";
 import { validate } from "../middleware/validate.ts";
@@ -8,6 +9,19 @@ import { notificationIdParams, notificationsPageQuery } from "../schemas/notific
 
 // A user only ever sees and changes their own notifications; there is no admin view of someone else's inbox.
 export const notificationsRouter = Router();
+
+type NotificationRow = {
+  value: number;
+  alert: { parameter: string; pond: { pondType: string | null } };
+};
+
+// Below the safe floor reads as "low", anything else as "high". An unknown parameter id (an older row from
+// before a parameter was renamed) has no threshold to compare against, so it falls back to "high".
+function directionFor(row: NotificationRow): "low" | "high" {
+  const { parameter } = row.alert;
+  if (!isParameterId(parameter)) return "high";
+  return row.value < thresholdsFor(row.alert.pond.pondType)[parameter].safeMin ? "low" : "high";
+}
 
 notificationsRouter.use(requireAuth);
 
@@ -42,7 +56,12 @@ notificationsRouter.get("/", validate(notificationsPageQuery, "query"), async (r
         readAt: true,
         createdAt: true,
         alert: {
-          select: { id: true, parameter: true, resolvedAt: true, pond: { select: { id: true, name: true } } },
+          select: {
+            id: true,
+            parameter: true,
+            resolvedAt: true,
+            pond: { select: { id: true, name: true, pondType: true } },
+          },
         },
       },
     }),
@@ -52,7 +71,11 @@ notificationsRouter.get("/", validate(notificationsPageQuery, "query"), async (r
   const last = rows.at(-1);
   const nextCursor = last && rows.length === limit ? encodeNotificationsCursor(last) : null;
 
-  res.json({ notifications: rows, unreadCount, nextCursor });
+  // Whether the reading was below or above its safe range, decided here because thresholds now depend on the
+  // pond's type and only the server holds them. The frontend just drops it into "too low" / "too high".
+  const notifications = rows.map((row) => ({ ...row, direction: directionFor(row) }));
+
+  res.json({ notifications, unreadCount, nextCursor });
 });
 
 notificationsRouter.post("/read-all", async (req, res) => {

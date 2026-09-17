@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { supabase } from "../lib/supabase.ts";
 import { supabaseAdmin } from "../lib/supabaseAdmin.ts";
-import { loginRateLimit } from "../middleware/loginRateLimit.ts";
+import { loginRateLimit, refreshRateLimit } from "../middleware/loginRateLimit.ts";
 import { requireAuth } from "../middleware/requireAuth.ts";
 import { validate } from "../middleware/validate.ts";
 import { loginSchema, refreshSchema } from "../schemas/auth.ts";
@@ -19,7 +19,7 @@ authRouter.post("/login", loginRateLimit, validate(loginSchema), async (req, res
   res.json({ user: data.user, session: data.session });
 });
 
-authRouter.post("/refresh", validate(refreshSchema), async (req, res) => {
+authRouter.post("/refresh", refreshRateLimit, validate(refreshSchema), async (req, res) => {
   const { refreshToken } = req.body;
 
   const { data, error } = await supabase.auth.refreshSession({ refresh_token: refreshToken });
