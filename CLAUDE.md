@@ -248,10 +248,17 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
 - **Alerts and notifications** (`src/lib/alerts.ts`). After ingest stores new readings, `evaluatePondAlerts()`
   reads the pond's `pondType` once, then re-checks each touched parameter against that type's thresholds.
   - An `Alert` is one out-of-range **episode** per pond/parameter, not one row per bad reading: opened by the first
-    abnormal reading, escalated at most once (WARNING → CRITICAL; severity never steps back down), and resolved
-    only after readings have stayed in range for `ALERT_RECOVERY_MS` (10 min), so a value hovering on a threshold
-    doesn't flap. Each open/escalate/resolve fans out one `Notification` row per `ACTIVE` profile (per-user read
-    state).
+    abnormal reading, escalated at most once (WARNING → CRITICAL; `Alert.severity` is the episode's worst and never
+    steps back down), and resolved only after readings have stayed in range for `ALERT_RECOVERY_MS` (10 min), so a
+    value hovering on a threshold doesn't flap. Each notified event fans out one `Notification` row per `ACTIVE`
+    profile (per-user read state).
+  - **An open episode notifies again every time the reading worsens**, not just on its first escalation. The
+    previous reading's severity is recovered by re-scoring `Alert.lastValue`, so nominal → warning, nominal →
+    critical and warning → critical all report even though the episode is still the same row. Without this, a
+    parameter that briefly recovered (too briefly to resolve) and then went critical again was silently swallowed —
+    the episode had already escalated, so nothing fired. A repeat is throttled by `ALERT_RENOTIFY_MS` (30 min since
+    that alert's last notification) and carries `ALERT_OPENED`; only the one true escalation past the episode's
+    worst severity is `ALERT_ESCALATED`, and it is never throttled.
   - It always evaluates the pond's **newest stored** reading, never the incoming batch, and skips anything not
     newer than `Alert.lastRecordedAt` — so duplicates and late backlog uploads can't reopen or resolve out of
     order.
