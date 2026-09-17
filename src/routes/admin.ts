@@ -91,19 +91,30 @@ adminRouter.get("/audit", validate(auditPageQuery, "query"), async (req, res) =>
     return res.status(400).json({ error: "invalid cursor" });
   }
 
-  const rows = await prisma.auditLog.findMany({
-    where: {
-      ...(action ? { action } : {}),
-      ...(targetType ? { targetType } : {}),
-      ...(actorId ? { actorId } : {}),
-      ...(from || to ? { createdAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {}),
-      ...(cursor
-        ? { OR: [{ createdAt: { lt: cursor.createdAt } }, { createdAt: cursor.createdAt, id: { lt: cursor.id } }] }
-        : {}),
-    },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    take: limit,
-  });
+  // Shared by both queries below, but deliberately without the cursor condition: the count is of
+  // everything the filters match, not just what's left after the current page.
+  const filterWhere = {
+    ...(action ? { action } : {}),
+    ...(targetType ? { targetType } : {}),
+    ...(actorId ? { actorId } : {}),
+    ...(from || to ? { createdAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {}),
+  };
+
+  const [rows, total] = await Promise.all([
+    prisma.auditLog.findMany({
+      where: {
+        ...filterWhere,
+        ...(cursor
+          ? { OR: [{ createdAt: { lt: cursor.createdAt } }, { createdAt: cursor.createdAt, id: { lt: cursor.id } }] }
+          : {}),
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: limit,
+    }),
+    // Lets the frontend page by number ("12–22 of 33") with real Previous/Next controls, the same as
+    // the Users/Ponds/Devices registries, instead of an unbounded "load more" feed.
+    prisma.auditLog.count({ where: filterWhere }),
+  ]);
 
   // AuditLog.actorId deliberately carries no foreign key, so that a row outlives the profile it names and the
   // history stays intact. That rules out an `include`, so names are resolved in a second lookup and an actor
@@ -132,6 +143,7 @@ adminRouter.get("/audit", validate(auditPageQuery, "query"), async (req, res) =>
       actor: row.actorId ? (actorById.get(row.actorId) ?? null) : null,
     })),
     nextCursor,
+    total,
   });
 });
 
