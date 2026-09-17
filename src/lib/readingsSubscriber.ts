@@ -32,6 +32,23 @@ function withinRateLimit(deviceId: string, now: number) {
   return allowed;
 }
 
+// All field units share one HiveMQ credential (the free tier can't scope logins to a topic), so anyone
+// holding it can publish to any device's topic, including nonexistent or enumerated device ids. Without
+// this, every such message still costs one prisma.device.findUnique() call, because the per-device rate
+// limit above only runs *after* a device is found and its signature verified — a garbage device id skips
+// it entirely. This is a coarse, global cap (well above any real fleet's total volume) that runs before
+// any database work, so spoofed or garbage traffic can't turn into unbounded query volume.
+const GLOBAL_RATE_WINDOW_MS = 60 * 1000;
+const GLOBAL_RATE_LIMIT = 300;
+let globalMessageTimes: number[] = [];
+
+function withinGlobalRateLimit(now: number) {
+  globalMessageTimes = globalMessageTimes.filter((time) => now - time < GLOBAL_RATE_WINDOW_MS);
+  const allowed = globalMessageTimes.length < GLOBAL_RATE_LIMIT;
+  if (allowed) globalMessageTimes.push(now);
+  return allowed;
+}
+
 // Returns why a message was dropped, or null once it was handed to ingest.
 async function handleReadingsMessage(topic: string, payload: Buffer): Promise<string | null> {
   const receivedAt = new Date();
@@ -41,6 +58,9 @@ async function handleReadingsMessage(topic: string, payload: Buffer): Promise<st
 
   const signed = parseSignedMessage(payload);
   if (!signed) return "payload is not a signed message";
+
+  // Checked before the database is touched at all — see the comment on withinGlobalRateLimit.
+  if (!withinGlobalRateLimit(receivedAt.getTime())) return "global rate limited";
 
   const device = await prisma.device.findUnique({ where: { id: deviceId } });
   if (!device) return "unknown device";

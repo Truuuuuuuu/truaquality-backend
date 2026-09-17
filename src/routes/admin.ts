@@ -1,5 +1,6 @@
 import { Router } from "express";
 import type { z } from "zod";
+import { Prisma } from "../generated/prisma/client.ts";
 import { logAudit } from "../lib/audit.ts";
 import { decodeAuditCursor, encodeAuditCursor } from "../lib/auditCursor.ts";
 import { prisma } from "../lib/prisma.ts";
@@ -63,6 +64,14 @@ adminRouter.post("/users", inviteEmailRateLimit, validate(inviteUserSchema), asy
   } catch (err) {
     // Roll back the Supabase user so a failed DB write doesn't leave an orphaned login.
     await supabaseAdmin.auth.admin.deleteUser(authUserId);
+    // The findUnique check above is check-then-act: two concurrent invites for the same brand-new email
+    // can both pass it before either has written a Profile row, and the second tx.profile.create() then
+    // hits the @unique constraint on email instead. Without this, that race surfaces as an opaque 500
+    // from the generic error handler rather than the same clean 409 the pre-check already gives for the
+    // non-race case.
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+      return res.status(409).json({ error: "a user with this email already exists" });
+    }
     throw err;
   }
 });

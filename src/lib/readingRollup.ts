@@ -41,7 +41,22 @@ async function rollupRecentHours(tx: Prisma.TransactionClient) {
 // Deletes raw Reading rows older than the retention window, in batches so no single statement holds a
 // long-running transaction. Safe to call any time rollupRecentHours() has already run in this cycle: the
 // cutoff is always well past MAX_SAMPLE_AGE_MS, so every row being deleted is already summarized.
+//
+// Re-checks the same advisory lock rollupRecentHours() took, because that one is released the moment its
+// transaction commits — it does not stay held across this function, which runs afterward as its own
+// series of statements (deliberately not one long transaction; see the batching loop below). Without
+// this, two overlapping cycles (the hourly in-process timer racing a manual `npm run rollup:readings`)
+// could both reach this loop at once. This only narrows the race to the gap between the two lock checks,
+// rather than eliminating it outright: a session-scoped lock held across the whole loop isn't reliable
+// under this project's pgbouncer transaction-mode pooler (the same reason rollupRecentHours uses a
+// transaction-scoped lock instead of a plain session one). A residual double-run just means duplicate,
+// idempotent deletes, not incorrect data.
 async function pruneRawReadings() {
+  const [{ locked }] = await prisma.$transaction(
+    (tx) => tx.$queryRaw<[{ locked: boolean }]>`SELECT pg_try_advisory_xact_lock(${ROLLUP_LOCK_KEY}) AS locked`,
+  );
+  if (!locked) return 0;
+
   const cutoff = new Date(Date.now() - rawRetentionDays() * 24 * 60 * 60 * 1000);
   let totalDeleted = 0;
   for (;;) {

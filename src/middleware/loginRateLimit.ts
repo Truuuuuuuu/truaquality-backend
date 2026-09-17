@@ -35,3 +35,16 @@ export const inviteEmailRateLimit = rateLimit({
   legacyHeaders: false,
   message: { error: "too many invite emails sent, please try again later" },
 });
+
+// GET /health/db is unauthenticated and runs a real query through the pgbouncer transaction pooler on
+// every hit. Without a cap, a tight polling loop (a misconfigured monitor, or someone just probing the
+// open endpoint) can exhaust the pooler's limited connection slots on a small Supabase plan, starving
+// every other request in the system of a database connection. The limit is generous relative to any
+// real monitoring cadence, which checks on the order of once every 10-60 seconds, not a tight loop.
+export const healthCheckRateLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "too many health checks, please try again later" },
+});

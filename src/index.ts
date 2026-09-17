@@ -3,6 +3,7 @@ import cors from "cors";
 import express, { type ErrorRequestHandler } from "express";
 import helmet from "helmet";
 import { prisma } from "./lib/prisma.ts";
+import { healthCheckRateLimit } from "./middleware/loginRateLimit.ts";
 import { adminRouter } from "./routes/admin.ts";
 import { authRouter } from "./routes/auth.ts";
 import { meRouter } from "./routes/me.ts";
@@ -52,7 +53,7 @@ app.get("/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 
-app.get("/health/db", async (_req, res) => {
+app.get("/health/db", healthCheckRateLimit, async (_req, res) => {
   try {
     await prisma.$queryRaw`SELECT 1`;
     res.json({ status: "ok" });

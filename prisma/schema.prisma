@@ -53,6 +53,9 @@ model AuditLog {
 
   @@index([targetType, targetId])
   @@index([actorId])
+  // Serves GET /admin/audit's keyset-paginated, newest-first listing when it isn't narrowed by
+  // action/targetType/actorId — the two indexes above can't produce that global ordering.
+  @@index([createdAt(sort: Desc), id(sort: Desc)])
 }
 
 enum PondStatus {
@@ -133,6 +136,10 @@ model Reading {
   // Lets a device safely retry an upload: duplicates are skipped instead of double-counted.
   @@unique([deviceId, parameter, recordedAt])
   @@index([pondId, parameter, recordedAt(sort: Desc)])
+  // Serves GET /ponds/:id/readings when `parameter` is omitted (the default "all parameters" history
+  // view): the index above can only use pondId as a scan prefix across different parameter values, so
+  // without this it falls back to an in-memory sort instead of a globally-sorted index scan.
+  @@index([pondId, recordedAt(sort: Desc), id(sort: Desc)])
   // Lets the retention job find and delete old rows without scanning the whole table.
   @@index([recordedAt])
 }
@@ -151,6 +158,10 @@ model ReadingHourly {
   count       Int
 
   @@id([pondId, parameter, bucketStart])
+  // Serves the day-resolution branch of GET /ponds/:id/series and the hourly export when `parameter`
+  // is omitted: the primary key above can only use pondId as a scan prefix across different parameter
+  // values, so a GROUP BY/ORDER BY over bucketStart alone falls back to an in-memory sort without this.
+  @@index([pondId, bucketStart])
 }
 
 enum AlertSeverity {

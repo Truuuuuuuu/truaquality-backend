@@ -172,12 +172,16 @@ pondsRouter.get(
     const rawCutoff = new Date(Date.now() - rawRetentionDays() * 24 * 60 * 60 * 1000);
 
     if (rangeMs <= SERIES_RAW_MAX_RANGE_MS && from >= rawCutoff) {
+      // Ordered newest-first so that if the range holds more than SERIES_MAX_POINTS rows, `take` keeps
+      // the most recent ones (what every caller of this endpoint actually wants — a recent-trend chart's
+      // right edge, "now") instead of silently dropping them and keeping only the oldest, stalest points.
       const rows = await prisma.reading.findMany({
         where: { pondId: id, parameter, recordedAt: { gte: from, lte: end } },
-        orderBy: { recordedAt: "asc" },
+        orderBy: { recordedAt: "desc" },
         take: SERIES_MAX_POINTS,
         select: { parameter: true, value: true, recordedAt: true },
       });
+      rows.reverse();
       return res.json({
         resolution: "raw",
         points: rows.map((row) => ({ parameter: row.parameter, t: row.recordedAt, avg: row.value, min: row.value, max: row.value })),
