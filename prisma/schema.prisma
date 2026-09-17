@@ -65,11 +65,22 @@ enum DeviceStatus {
   DISABLED
 }
 
+// The water type a pond is stocked for. Unset until an admin fills it in — a pond can be created before
+// this is known.
+enum PondType {
+  FRESHWATER
+  BRACKISH
+  SALTWATER
+}
+
 // Ponds are archived, never deleted, so their reading history stays intact.
 model Pond {
   id             String          @id @default(uuid()) @db.Uuid
   name           String          @unique
   notes          String?
+  // Both optional: a pond can be registered before its stocking is decided, and filled in later.
+  fishSpecies    String?
+  pondType       PondType?
   status         PondStatus      @default(ACTIVE)
   device         Device?
   readings       Reading[]

@@ -3,14 +3,20 @@ import { PARAMETER_IDS } from "../lib/parameters.ts";
 
 export const pondIdParams = z.object({ id: z.uuid() });
 
+const pondType = z.enum(["FRESHWATER", "BRACKISH", "SALTWATER"]);
+
 export const createPondSchema = z.object({
   name: z.string().trim().min(1).max(80),
   notes: z.string().trim().max(500).optional(),
+  fishSpecies: z.string().trim().max(120).optional(),
+  pondType: pondType.optional(),
 });
 
 export const updatePondSchema = z.object({
   name: z.string().trim().min(1).max(80).optional(),
   notes: z.string().trim().max(500).nullable().optional(),
+  fishSpecies: z.string().trim().max(120).nullable().optional(),
+  pondType: pondType.nullable().optional(),
   status: z.enum(["ACTIVE", "ARCHIVED"]).optional(),
 });
 

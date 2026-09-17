@@ -9,7 +9,7 @@ import { createPondSchema, pondIdParams, updatePondSchema } from "../schemas/pon
 export const adminPondsRouter = Router();
 
 adminPondsRouter.post("/", validate(createPondSchema), async (req, res) => {
-  const { name, notes } = req.body as z.infer<typeof createPondSchema>;
+  const { name, notes, fishSpecies, pondType } = req.body as z.infer<typeof createPondSchema>;
   const actorId = req.profile!.id;
 
   const existing = await prisma.pond.findUnique({ where: { name } });
@@ -18,7 +18,7 @@ adminPondsRouter.post("/", validate(createPondSchema), async (req, res) => {
   }
 
   const pond = await prisma.$transaction(async (tx) => {
-    const created = await tx.pond.create({ data: { name, notes } });
+    const created = await tx.pond.create({ data: { name, notes, fishSpecies, pondType } });
     await logAudit(
       { actorId, action: "pond.create", targetType: "pond", targetId: created.id, metadata: { name } },
       tx,
