@@ -10,14 +10,15 @@ import { notificationIdParams, notificationsPageQuery } from "../schemas/notific
 // A user only ever sees and changes their own notifications; there is no admin view of someone else's inbox.
 export const notificationsRouter = Router();
 
-type NotificationRow = {
+type AlertNotificationRow = {
   value: number;
   alert: { parameter: string; pond: { pondType: string | null } };
 };
 
 // Below the safe floor reads as "low", anything else as "high". An unknown parameter id (an older row from
-// before a parameter was renamed) has no threshold to compare against, so it falls back to "high".
-function directionFor(row: NotificationRow): "low" | "high" {
+// before a parameter was renamed) has no threshold to compare against, so it falls back to "high". Only
+// meaningful for ALERT_* rows, which are the only ones with an alert and a value.
+function directionFor(row: AlertNotificationRow): "low" | "high" {
   const { parameter } = row.alert;
   if (!isParameterId(parameter)) return "high";
   return row.value < thresholdsFor(row.alert.pond.pondType)[parameter].safeMin ? "low" : "high";
@@ -63,6 +64,14 @@ notificationsRouter.get("/", validate(notificationsPageQuery, "query"), async (r
             pond: { select: { id: true, name: true, pondType: true } },
           },
         },
+        device: {
+          select: {
+            id: true,
+            label: true,
+            serial: true,
+            pond: { select: { id: true, name: true } },
+          },
+        },
       },
     }),
     prisma.notification.count({ where: { profileId, readAt: null } }),
@@ -72,8 +81,12 @@ notificationsRouter.get("/", validate(notificationsPageQuery, "query"), async (r
   const nextCursor = last && rows.length === limit ? encodeNotificationsCursor(last) : null;
 
   // Whether the reading was below or above its safe range, decided here because thresholds now depend on the
-  // pond's type and only the server holds them. The frontend just drops it into "too low" / "too high".
-  const notifications = rows.map((row) => ({ ...row, direction: directionFor(row) }));
+  // pond's type and only the server holds them. The frontend just drops it into "too low" / "too high". Only
+  // ALERT_* rows have an alert and a value to compare; DEVICE_* rows have neither.
+  const notifications = rows.map((row) => ({
+    ...row,
+    direction: row.alert && row.value !== null ? directionFor({ alert: row.alert, value: row.value }) : null,
+  }));
 
   res.json({ notifications, unreadCount, nextCursor });
 });

@@ -1,4 +1,5 @@
-import type { AlertSeverity, NotificationKind, Prisma } from "../generated/prisma/client.ts";
+import type { AlertSeverity } from "../generated/prisma/client.ts";
+import { notifyActiveUsers } from "./notify.ts";
 import { severityFor, type ParameterId } from "./parameters.ts";
 import { prisma } from "./prisma.ts";
 
@@ -15,22 +16,6 @@ export const ALERT_RECOVERY_MS = 10 * 60 * 1000;
 export const ALERT_RENOTIFY_MS = 30 * 60 * 1000;
 
 const SEVERITY_RANK: Record<AlertSeverity, number> = { WARNING: 1, CRITICAL: 2 };
-
-type AlertEvent = {
-  alertId: string;
-  kind: NotificationKind;
-  severity: AlertSeverity;
-  value: number;
-  recordedAt: Date;
-};
-
-// Fans an event out to every active user. Single org and a handful of staff, so a row per recipient is cheap and
-// gives each of them their own read state. Invited users who haven't signed in yet start with a clean inbox.
-async function notifyActiveUsers(tx: Prisma.TransactionClient, event: AlertEvent) {
-  const recipients = await tx.profile.findMany({ where: { status: "ACTIVE" }, select: { id: true } });
-  if (recipients.length === 0) return;
-  await tx.notification.createMany({ data: recipients.map(({ id }) => ({ profileId: id, ...event })) });
-}
 
 // Re-evaluates one pond parameter's alert against its newest stored reading — not the incoming batch, so a
 // buffered backlog of older samples can never open or resolve an alert out of order. `pondType` decides which
@@ -82,7 +67,9 @@ async function evaluateParameter(pondId: string, parameter: ParameterId, pondTyp
           orderBy: { recordedAt: "desc" },
           select: { recordedAt: true },
         });
-        notify = !last || recordedAt.getTime() - last.recordedAt.getTime() >= ALERT_RENOTIFY_MS;
+        // recordedAt is only nullable for DEVICE_* notifications; every ALERT_* row this scope's `alertId`
+        // filter can match set it.
+        notify = !last || recordedAt.getTime() - last.recordedAt!.getTime() >= ALERT_RENOTIFY_MS;
       }
 
       await tx.alert.update({

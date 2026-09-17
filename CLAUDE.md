@@ -207,6 +207,25 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
     overlapping the hourly one) never do it twice at once. It's a transaction-scoped lock precisely because
     `DATABASE_URL` is a pgbouncer transaction-mode pooler — a session-scoped lock wouldn't reliably hold
     across statements there.
+- **Device-offline watchdog.** Alerting is otherwise entirely reading-driven (`evaluatePondAlerts()` only
+  runs from ingest), so a device that just stops transmitting raises nothing on its own — no reading ever
+  arrives to trigger it. `src/lib/deviceWatchdog.ts` is the one thing that actively looks at
+  `Device.lastSeenAt`: `startDeviceWatchdog()` runs `runDeviceWatchdogCycle()` once on boot and then every
+  minute (same `app.listen()`-callback pattern as the rollup job; set `WATCHDOG_ENABLED=false` to skip it).
+  - A cycle finds every `ACTIVE`, pond-assigned device whose `lastSeenAt` is older than 5 minutes (kept in
+    sync with the frontend's `STALE_AFTER_MS`) and not already flagged, sets `Device.offlineSince`, and
+    notifies with `NotificationKind.DEVICE_OFFLINE`; then finds every flagged device whose `lastSeenAt` has
+    become recent again, clears `offlineSince`, and notifies with `DEVICE_ONLINE`. `offlineSince` is the
+    open/closed marker for the episode, the same role `Alert.resolvedAt` plays for a reading-driven one
+    (just inverted: non-null here means open).
+  - A device that has never reported (`lastSeenAt` null) is left alone — that's "not yet installed", not
+    "offline" — and so is one that isn't assigned to a pond, since nothing is being monitored on it yet.
+  - `Notification.alertId`/`deviceId` are both nullable and exactly one is ever set (a hand-added `CHECK`
+    constraint in the `device_offline_watchdog` migration enforces it): `ALERT_*` kinds point at the episode
+    and carry `value`/`recordedAt`; `DEVICE_*` kinds point at the device and leave both null. `notifyActiveUsers`
+    (`src/lib/notify.ts`) is shared between `alerts.ts` and `deviceWatchdog.ts` for this reason.
+  - `pg_try_advisory_xact_lock` guards the whole cycle the same way as the rollup job, so two backend
+    instances never race the same device's offline/recovery transition.
   - `npm run rollup:readings` (`scripts/rollup-readings.ts`) runs one cycle manually and exits — useful for
     testing, or for driving the job from an external scheduler instead of the in-process interval.
   - `GET /ponds/:id/readings` is keyset-paginated (`before` cursor from `nextCursor`, encoded in
@@ -322,6 +341,9 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
 - `RAW_RETENTION_DAYS` (optional, default `30`): how long raw `Reading` rows are kept before being pruned
   (they're summarized into `ReadingHourly` first, which is kept forever). Floored at 8 days regardless of
   what's set, since a lower value could prune a row before a device's buffered backlog upload for it arrives.
+- `WATCHDOG_ENABLED` (optional, default effectively `true`): set to `"false"` to skip the in-process
+  device-offline watchdog (e.g. if it's driven by an external scheduler calling `npm run watchdog:devices`
+  instead). Same restart-to-take-effect caveat as `MQTT_ENABLED`.
 
 **Email confirmation** is currently disabled in Supabase (Authentication → Providers → Email → "Confirm
 email"). Invited users confirm their email by opening the invite link either way. Re-enable it before
@@ -329,12 +351,5 @@ production.
 
 ## Known follow-ups (not yet built)
 
-- **Device-offline detection.** `Device.lastSeenAt` is written in `src/lib/ingest.ts` and read by nothing on
-  the server. Alerting is entirely reading-driven — `evaluatePondAlerts()` only runs from ingest — so a device
-  that dies raises no alert, no notification and no log line; staleness is drawn client-side only
-  (`frontend/src/lib/pond-status.ts`). `PRODUCT.md` asks for this. It needs a migration
-  (`Notification.alertId` is a required FK to `Alert`, and `NotificationKind` has only the three `ALERT_*`
-  values) plus a watchdog job, which can copy `src/lib/readingRollup.ts` wholesale: started from
-  `app.listen()`'s callback, guarded by `pg_try_advisory_xact_lock`, with an `*_ENABLED` env flag.
 - Finer-grained roles for pond/device management (today: any signed-in user reads, only `ADMIN` writes).
 - No tests anywhere in the repo and no CI; `npm test` is still the npm placeholder.

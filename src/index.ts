@@ -6,6 +6,7 @@ import { prisma } from "./lib/prisma.ts";
 import { adminRouter } from "./routes/admin.ts";
 import { authRouter } from "./routes/auth.ts";
 import { meRouter } from "./routes/me.ts";
+import { startDeviceWatchdog } from "./lib/deviceWatchdog.ts";
 import { startReadingRollup } from "./lib/readingRollup.ts";
 import { startReadingsSubscriber } from "./lib/readingsSubscriber.ts";
 import { devicesRouter } from "./routes/devices.ts";
@@ -94,6 +95,7 @@ app.use(errorHandler);
 // turn.
 let mqttClient: ReturnType<typeof startReadingsSubscriber> | null = null;
 let rollupTimer: ReturnType<typeof startReadingRollup> | null = null;
+let watchdogTimer: ReturnType<typeof startDeviceWatchdog> | null = null;
 
 const server = app.listen(port, () => {
   console.log(`Server listening on port ${port}`);
@@ -112,6 +114,14 @@ const server = app.listen(port, () => {
     console.log("[rollup] disabled (ROLLUP_ENABLED=false)");
   } else {
     rollupTimer = startReadingRollup();
+  }
+
+  // Watches Device.lastSeenAt for units that have gone quiet and notifies when one goes offline or recovers.
+  // Set WATCHDOG_ENABLED=false to skip this (e.g. doing UI-only work against a database you don't want touched).
+  if (process.env.WATCHDOG_ENABLED === "false") {
+    console.log("[watchdog] disabled (WATCHDOG_ENABLED=false)");
+  } else {
+    watchdogTimer = startDeviceWatchdog();
   }
 });
 
@@ -146,6 +156,7 @@ async function shutdown(signal: NodeJS.Signals) {
   failsafe.unref();
 
   if (rollupTimer) clearInterval(rollupTimer);
+  if (watchdogTimer) clearInterval(watchdogTimer);
 
   await new Promise<void>((resolve) => server.close(() => resolve()));
   // `false` means "send DISCONNECT properly" rather than yanking the socket.

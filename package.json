@@ -13,6 +13,7 @@
     "set-password": "node scripts/set-password.ts",
     "simulate:devices": "node scripts/simulate-devices.ts",
     "rollup:readings": "node scripts/rollup-readings.ts",
+    "watchdog:devices": "node scripts/watchdog-devices.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {

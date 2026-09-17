@@ -107,7 +107,12 @@ model Device {
   assignedAt      DateTime?
   firmwareVersion String?
   lastSeenAt      DateTime?
+  // Set by the watchdog job (lib/deviceWatchdog.ts) the first cycle it finds lastSeenAt stale; cleared the
+  // cycle lastSeenAt looks recent again. Null means "not currently flagged offline" — the offline-episode
+  // equivalent of Alert.resolvedAt, just inverted (non-null here means open, not resolved).
+  offlineSince    DateTime?
   readings        Reading[]
+  notifications   Notification[]
   createdAt       DateTime     @default(now())
   updatedAt       DateTime     @updatedAt
 }
@@ -157,6 +162,10 @@ enum NotificationKind {
   ALERT_OPENED
   ALERT_ESCALATED
   ALERT_RESOLVED
+  // Raised by the watchdog job (lib/deviceWatchdog.ts), not evaluatePondAlerts — a device that stops
+  // transmitting entirely never produces a reading for the alert pipeline to react to.
+  DEVICE_OFFLINE
+  DEVICE_ONLINE
 }
 
 // One out-of-range episode for a pond's parameter, from its first abnormal reading until readings have stayed
@@ -183,18 +192,22 @@ model Alert {
   @@index([pondId, parameter, resolvedAt])
 }
 
-// One row per recipient per alert event, so each user has their own read state. value/recordedAt/severity
-// are a snapshot of the reading that caused the event; the alert itself keeps moving.
+// One row per recipient per event, so each user has their own read state. Exactly one of alertId/deviceId is
+// set (enforced by a CHECK constraint added by hand in the migration, see backend/CLAUDE.md): ALERT_* kinds
+// point at the out-of-range episode, DEVICE_* kinds point at the device that went quiet. value/recordedAt
+// are the reading that caused an ALERT_* event and are null for DEVICE_* ones, which have no reading.
 model Notification {
   id         String           @id @default(uuid()) @db.Uuid
   profileId  String           @db.Uuid
   profile    Profile          @relation(fields: [profileId], references: [id], onDelete: Cascade)
-  alertId    String           @db.Uuid
-  alert      Alert            @relation(fields: [alertId], references: [id], onDelete: Cascade)
+  alertId    String?          @db.Uuid
+  alert      Alert?           @relation(fields: [alertId], references: [id], onDelete: Cascade)
+  deviceId   String?          @db.Uuid
+  device     Device?          @relation(fields: [deviceId], references: [id], onDelete: Cascade)
   kind       NotificationKind
   severity   AlertSeverity
-  value      Float
-  recordedAt DateTime
+  value      Float?
+  recordedAt DateTime?
   readAt     DateTime?
   createdAt  DateTime         @default(now())
 
