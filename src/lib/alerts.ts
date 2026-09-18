@@ -43,8 +43,12 @@ async function evaluateParameter(pondId: string, parameter: ParameterId, pondTyp
       }
 
       case "abnormal": {
-        // decideAlertStep only returns "abnormal" for an open episode.
-        const episode = open!;
+        // decideAlertStep only returns "abnormal" for an open episode, but nothing in AlertStep carries
+        // that. Checking it here narrows `open` for the compiler instead of asserting past it with `!`,
+        // and a future path that broke the invariant (say "open at CRITICAL immediately") would say so
+        // rather than throwing "Cannot read properties of null" from inside the transaction.
+        if (!open) throw new Error(`[alerts] "abnormal" step for ${pondId}/${parameter} without an open episode`);
+        const episode = open;
         // An escalation always notifies. A worsened reading that isn't one is throttled against the episode's
         // last notification — looked up only here, so every other path skips the query.
         let notify = step.escalated;
@@ -81,7 +85,8 @@ async function evaluateParameter(pondId: string, parameter: ParameterId, pondTyp
       }
 
       case "nominal": {
-        const episode = open!;
+        if (!open) throw new Error(`[alerts] "nominal" step for ${pondId}/${parameter} without an open episode`);
+        const episode = open;
         await tx.alert.update({
           where: { id: episode.id },
           data: {
