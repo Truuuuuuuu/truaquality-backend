@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { assertLocalDatabase } from "./dbGuard.ts";
 
 // Every case passes a literal env object — never process.env — so the table is
@@ -105,4 +107,49 @@ test("unparseable-URL message does not echo the raw value", () => {
       return true;
     },
   );
+});
+
+// End-to-end proof that the real `npm test` wiring refuses a shell-exported remote
+// DATABASE_URL. The child gets the same flags as the `test` script, but the override
+// is passed through `env` exactly as a shell export would be — and shell exports win
+// over --env-file. Targets a *.fixture.ts file so it never recurses into this suite.
+const BACKEND_ROOT = fileURLToPath(new URL("../../", import.meta.url));
+
+function runGuardProbe(databaseUrl: string) {
+  // Under `node --test` this file runs in a child that carries NODE_TEST_CONTEXT. Passed on,
+  // it makes the probe think it is a nested run and skip its files ("run() is being called
+  // recursively"), so drop it to get a genuine top-level runner like `npm test`.
+  const { NODE_TEST_CONTEXT: _nested, ...parentEnv } = process.env;
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--env-file=test.env",
+      "--test",
+      "--test-global-setup=./src/testing/globalSetup.ts",
+      "src/testing/__fixtures__/guard-probe.fixture.ts",
+    ],
+    {
+      cwd: BACKEND_ROOT,
+      env: { ...parentEnv, DATABASE_URL: databaseUrl },
+      encoding: "utf8",
+    },
+  );
+  return { status: result.status, output: `${result.stdout}${result.stderr}` };
+}
+
+test("test runner refuses a shell-exported remote DATABASE_URL before any test loads", () => {
+  const { status, output } = runGuardProbe(
+    "postgres://u:secretpw@db.example.supabase.co:5432/postgres",
+  );
+  assert.notEqual(status, 0);
+  assert.match(output, /refusing to run/);
+  assert.ok(!output.includes("secretpw"), "guard output must not contain the password");
+  assert.doesNotMatch(output, /✔ guard probe ran/);
+  assert.doesNotMatch(output, /ok \d+ - guard probe ran/);
+});
+
+test("test runner allows a shell-exported localhost DATABASE_URL", () => {
+  const { status, output } = runGuardProbe("postgresql://test:test@127.0.0.1:1/x");
+  assert.equal(status, 0, output);
+  assert.match(output, /guard probe ran/);
 });

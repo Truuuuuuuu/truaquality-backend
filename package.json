@@ -15,7 +15,9 @@
     "rollup:readings": "node scripts/rollup-readings.ts",
     "watchdog:devices": "node scripts/watchdog-devices.ts",
     "purge:parameters": "node scripts/purge-parameters.ts",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --env-file=test.env --test --test-global-setup=./src/testing/globalSetup.ts \"src/**/*.test.ts\"",
+    "test:coverage": "node --env-file=test.env --test --experimental-test-coverage --test-coverage-include=\"src/**\" --test-coverage-exclude=\"src/generated/**\" --test-coverage-exclude=\"**/*.test.ts\" --test-global-setup=./src/testing/globalSetup.ts \"src/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.0",
