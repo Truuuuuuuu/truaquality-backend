@@ -35,6 +35,49 @@ for (const url of REMOTE_DATABASE_URLS) {
   });
 }
 
+// CR-01: pg-connection-string lets a `?host=`/`?hostaddr=` query parameter override the host parsed
+// from the URL authority, so every one of these has a localhost `new URL(...).hostname` and would
+// still have connected somewhere else. Verified against pg-connection-string 2.14: `?host=` replaces
+// config.host outright and `?hostaddr=` sets the address pg dials.
+const HOST_OVERRIDE_DATABASE_URLS = [
+  "postgresql://u:p@127.0.0.1:1/db?host=db.prod.supabase.co",
+  "postgresql://u:p@127.0.0.1:1/db?hostaddr=10.0.0.5",
+  "postgresql://u:p@localhost:5432/db?sslmode=require&host=aws-0-ap-southeast-1.pooler.supabase.com",
+  // Looks local, but a Cloud SQL socket is a proxy to a remote instance.
+  "postgresql://u:p@127.0.0.1:1/db?host=/cloudsql/proj:region:inst",
+];
+
+for (const url of HOST_OVERRIDE_DATABASE_URLS) {
+  const param = new URL(url).searchParams.has("hostaddr") ? "hostaddr" : "host";
+  test(`refuses a DATABASE_URL that overrides the host via ?${param}= (${url.split("?")[1]})`, () => {
+    // Sanity: the URL authority really is local, so only the override check can catch this.
+    assert.ok(["localhost", "127.0.0.1"].includes(new URL(url).hostname));
+    assert.throws(
+      () => assertLocalDatabase({ DATABASE_URL: url }),
+      new RegExp(`^Error: \\[test-guard\\] refusing to run: DATABASE_URL overrides the host via "\\?${param}="`),
+    );
+  });
+}
+
+test("host-override refusal does not leak the URL password", () => {
+  const url = "postgresql://u:secretpw@127.0.0.1:1/db?host=db.prod.supabase.co";
+  assert.throws(
+    () => assertLocalDatabase({ DATABASE_URL: url }),
+    (err: unknown) => {
+      assert.ok(err instanceof Error);
+      assert.ok(!err.message.includes("secretpw"), "message must not contain the password");
+      assert.ok(!err.message.includes(url), "message must not contain the full URL");
+      return true;
+    },
+  );
+});
+
+test("a query string with no host-overriding parameter is still accepted", () => {
+  assert.doesNotThrow(() =>
+    assertLocalDatabase({ DATABASE_URL: "postgresql://test:test@127.0.0.1:1/db?pgbouncer=true&sslmode=disable" }),
+  );
+});
+
 test("refuses an empty DATABASE_URL (pg would fall back to PGHOST defaults)", () => {
   assert.throws(
     () => assertLocalDatabase({ DATABASE_URL: "" }),
@@ -143,6 +186,17 @@ test("test runner refuses a shell-exported remote DATABASE_URL before any test l
   );
   assert.notEqual(status, 0);
   assert.match(output, /refusing to run/);
+  assert.ok(!output.includes("secretpw"), "guard output must not contain the password");
+  assert.doesNotMatch(output, /✔ guard probe ran/);
+  assert.doesNotMatch(output, /ok \d+ - guard probe ran/);
+});
+
+test("test runner refuses a shell-exported DATABASE_URL that overrides the host in its query string", () => {
+  const { status, output } = runGuardProbe(
+    "postgresql://u:secretpw@127.0.0.1:1/postgres?host=db.example.supabase.co",
+  );
+  assert.notEqual(status, 0);
+  assert.match(output, /refusing to run: DATABASE_URL overrides the host/);
   assert.ok(!output.includes("secretpw"), "guard output must not contain the password");
   assert.doesNotMatch(output, /✔ guard probe ran/);
   assert.doesNotMatch(output, /ok \d+ - guard probe ran/);
