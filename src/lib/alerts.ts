@@ -1,21 +1,11 @@
-import type { AlertSeverity } from "../generated/prisma/client.ts";
+import { decideAlertStep, notificationKindFor, renotifyDue } from "./alertRules.ts";
 import { notifyActiveUsers } from "./notify.ts";
-import { severityFor, type ParameterId } from "./parameters.ts";
+import type { ParameterId } from "./parameters.ts";
 import { prisma } from "./prisma.ts";
 
-// How long a parameter has to stay back in range before its alert resolves. Without it, a value hovering on a
-// threshold would open and resolve an alert — and notify everyone — every other minute.
-export const ALERT_RECOVERY_MS = 10 * 60 * 1000;
-
-// How long after an episode's last notification it may notify again when the parameter gets worse a second
-// time — e.g. it dips back into the critical range after a short recovery that wasn't long enough to resolve
-// the alert. A value sitting on a threshold crosses it every few minutes, so re-notifying needs a floor;
-// without one the flapping ALERT_RECOVERY_MS exists to absorb would come back as a toast every other minute.
-// The episode's first escalation ignores this: it happens at most once, and it's the one thing nobody should
-// hear about half an hour late.
-export const ALERT_RENOTIFY_MS = 30 * 60 * 1000;
-
-const SEVERITY_RANK: Record<AlertSeverity, number> = { WARNING: 1, CRITICAL: 2 };
+// The decision rules (open / escalate / renotify / resolve and their timing) live in alertRules.ts; this file
+// is the transaction, lock, write and notify shell around them.
+export { ALERT_RECOVERY_MS, ALERT_RENOTIFY_MS } from "./alertRules.ts";
 
 // Re-evaluates one pond parameter's alert against its newest stored reading — not the incoming batch, so a
 // buffered backlog of older samples can never open or resolve an alert out of order. `pondType` decides which
@@ -33,77 +23,85 @@ async function evaluateParameter(pondId: string, parameter: ParameterId, pondTyp
     });
     if (!latest) return;
     const { value, recordedAt } = latest;
-    const severity = severityFor(parameter, value, pondType);
 
     const open = await tx.alert.findFirst({ where: { pondId, parameter, resolvedAt: null } });
 
-    if (!open) {
-      if (!severity) return;
-      const alert = await tx.alert.create({
-        data: { pondId, parameter, severity, openedAt: recordedAt, lastValue: value, lastRecordedAt: recordedAt },
-      });
-      await notifyActiveUsers(tx, { alertId: alert.id, kind: "ALERT_OPENED", severity, value, recordedAt });
-      return;
-    }
+    const step = decideAlertStep(parameter, pondType, open, latest);
 
-    // Already evaluated (a duplicate delivery, or a batch that only added older samples).
-    if (recordedAt <= open.lastRecordedAt) return;
+    switch (step.kind) {
+      case "none":
+      case "stale":
+        return;
 
-    if (severity) {
-      // Alert.severity is the episode's worst, so it answers "has it ever been this bad?", not "was the last
-      // reading this bad?". Re-scoring lastValue gives the previous reading's severity, which is what says
-      // whether this one is a step down: nominal -> warning, nominal -> critical, warning -> critical.
-      const previous = severityFor(parameter, open.lastValue, pondType);
-      const worsened = SEVERITY_RANK[severity] > (previous ? SEVERITY_RANK[previous] : 0);
-      const escalated = SEVERITY_RANK[severity] > SEVERITY_RANK[open.severity];
-
-      // An episode used to notify only on its first abnormal reading and its first escalation, so a parameter
-      // that recovered and went bad again was never reported — and that is the common case, since the episode
-      // stays open through ALERT_RECOVERY_MS of in-range readings and a value crossing back is still news.
-      let notify = escalated;
-      if (worsened && !escalated) {
-        const last = await tx.notification.findFirst({
-          where: { alertId: open.id },
-          orderBy: { recordedAt: "desc" },
-          select: { recordedAt: true },
+      case "open": {
+        const { severity } = step;
+        const alert = await tx.alert.create({
+          data: { pondId, parameter, severity, openedAt: recordedAt, lastValue: value, lastRecordedAt: recordedAt },
         });
-        // recordedAt is only nullable for DEVICE_* notifications; every ALERT_* row this scope's `alertId`
-        // filter can match set it.
-        notify = !last || recordedAt.getTime() - last.recordedAt!.getTime() >= ALERT_RENOTIFY_MS;
+        await notifyActiveUsers(tx, { alertId: alert.id, kind: "ALERT_OPENED", severity, value, recordedAt });
+        return;
       }
 
-      await tx.alert.update({
-        where: { id: open.id },
-        data: { lastValue: value, lastRecordedAt: recordedAt, nominalSince: null, ...(escalated ? { severity } : {}) },
-      });
-      if (notify) {
-        await notifyActiveUsers(tx, {
-          // ALERT_ESCALATED is reserved for the episode's one step past its worst severity so far; a repeat of
-          // a severity it has already reached reads as a fresh "too low/high", the wording it opened with.
-          kind: escalated ? "ALERT_ESCALATED" : "ALERT_OPENED",
-          alertId: open.id,
-          severity,
-          value,
-          recordedAt,
-        });
-      }
-      return;
-    }
+      case "abnormal": {
+        // decideAlertStep only returns "abnormal" for an open episode.
+        const episode = open!;
+        // An escalation always notifies. A worsened reading that isn't one is throttled against the episode's
+        // last notification — looked up only here, so every other path skips the query.
+        let notify = step.escalated;
+        if (step.worsened && !step.escalated) {
+          const last = await tx.notification.findFirst({
+            where: { alertId: episode.id },
+            orderBy: { recordedAt: "desc" },
+            select: { recordedAt: true },
+          });
+          // recordedAt is only nullable for DEVICE_* notifications; every ALERT_* row this scope's `alertId`
+          // filter can match set it.
+          notify = renotifyDue(last ? last.recordedAt! : null, recordedAt);
+        }
 
-    const nominalSince = open.nominalSince ?? recordedAt;
-    const recovered = recordedAt.getTime() - nominalSince.getTime() >= ALERT_RECOVERY_MS;
-    await tx.alert.update({
-      where: { id: open.id },
-      data: { lastValue: value, lastRecordedAt: recordedAt, nominalSince, ...(recovered ? { resolvedAt: recordedAt } : {}) },
-    });
-    if (recovered) {
-      await notifyActiveUsers(tx, {
-        alertId: open.id,
-        kind: "ALERT_RESOLVED",
-        severity: open.severity,
-        value,
-        recordedAt,
-      });
+        await tx.alert.update({
+          where: { id: episode.id },
+          data: {
+            lastValue: value,
+            lastRecordedAt: recordedAt,
+            nominalSince: null,
+            ...(step.escalated ? { severity: step.severity } : {}),
+          },
+        });
+        if (notify) {
+          await notifyActiveUsers(tx, {
+            kind: notificationKindFor(step.escalated),
+            alertId: episode.id,
+            severity: step.severity,
+            value,
+            recordedAt,
+          });
+        }
+        return;
+      }
+
+      case "nominal": {
+        const episode = open!;
+        await tx.alert.update({
+          where: { id: episode.id },
+          data: {
+            lastValue: value,
+            lastRecordedAt: recordedAt,
+            nominalSince: step.nominalSince,
+            ...(step.resolved ? { resolvedAt: recordedAt } : {}),
+          },
+        });
+        if (step.resolved) {
+          await notifyActiveUsers(tx, {
+            alertId: episode.id,
+            kind: "ALERT_RESOLVED",
+            severity: episode.severity,
+            value,
+            recordedAt,
+          });
+        }
+        return;
+      }
     }
   });
 }
