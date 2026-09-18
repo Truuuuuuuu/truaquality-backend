@@ -53,14 +53,22 @@ async function evaluateParameter(pondId: string, parameter: ParameterId, pondTyp
         // last notification — looked up only here, so every other path skips the query.
         let notify = step.escalated;
         if (step.worsened && !step.escalated) {
+          // Notification.recordedAt is DateTime? (it is null for DEVICE_* rows) and no constraint ties
+          // "has an alertId" to "has a recordedAt", so the filter says so instead of a `!` asserting it.
+          // It also removes a trap: Postgres orders DESC NULLS FIRST, so a null-recordedAt row for this
+          // episode would have been the row this query returned.
+          //
+          // Deliberate, documented divergence from the pre-phase baseline, which did
+          // `last.recordedAt!.getTime()` and threw a TypeError on such a row. That throw aborted the whole
+          // transaction, so the episode's lastValue/lastRecordedAt/nominalSince were never written either
+          // and ingest.ts swallowed it into a console.error — strictly worse than notifying. Unreachable
+          // today; this makes the choice explicit rather than accidental.
           const last = await tx.notification.findFirst({
-            where: { alertId: episode.id },
+            where: { alertId: episode.id, recordedAt: { not: null } },
             orderBy: { recordedAt: "desc" },
             select: { recordedAt: true },
           });
-          // recordedAt is only nullable for DEVICE_* notifications; every ALERT_* row this scope's `alertId`
-          // filter can match set it.
-          notify = renotifyDue(last ? last.recordedAt! : null, recordedAt);
+          notify = renotifyDue(last?.recordedAt ?? null, recordedAt);
         }
 
         await tx.alert.update({

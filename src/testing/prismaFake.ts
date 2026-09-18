@@ -57,11 +57,14 @@ export type PrismaFakeOptions = {
 
 type Where = Record<string, unknown>;
 
+// `orderBy: { <col>: "desc" }` in Postgres is DESC NULLS FIRST, so a null sorts ahead of every value —
+// the opposite of treating it as -Infinity, which put it last and made the fake unable to reproduce the
+// row real Prisma would have returned.
 function newestBy<T>(items: T[], key: (item: T) => Date | null | undefined): T | null {
   let best: T | null = null;
   let bestTime = -Infinity;
   for (const item of items) {
-    const time = key(item)?.getTime() ?? -Infinity;
+    const time = key(item)?.getTime() ?? Infinity;
     if (best === null || time > bestTime) {
       best = item;
       bestTime = time;
@@ -202,10 +205,14 @@ export function createPrismaFake(opts: PrismaFakeOptions = {}) {
     notification: {
       findFirst: async (args: { where: Where }) => {
         record("tx.notification.findFirst", args);
-        const newest = newestBy(
-          notifications.filter((n) => n.alertId === args.where.alertId),
-          (n) => n.recordedAt,
-        );
+        let rows = notifications.filter((n) => n.alertId === args.where.alertId);
+        // Honour `recordedAt: { not: null }`. Without it the fake would silently widen the query and
+        // hide the NULLS FIRST ordering the filter exists to avoid.
+        const recordedAtFilter = args.where.recordedAt as { not?: unknown } | undefined;
+        if (recordedAtFilter && recordedAtFilter.not === null) {
+          rows = rows.filter((n) => n.recordedAt != null);
+        }
+        const newest = newestBy(rows, (n) => n.recordedAt);
         return newest ? { recordedAt: newest.recordedAt ?? null } : null;
       },
       createMany: async (args: { data: FakeNotification[] }) => {

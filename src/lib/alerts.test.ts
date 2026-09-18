@@ -216,6 +216,29 @@ test("re-worsening just under 30 min since last notification: looked up, not ren
   assert.equal(fake.alerts[0].nominalSince, null);
 });
 
+test("a null-recordedAt notification for the episode is excluded from the renotify throttle", async (t) => {
+  const fake = setup(t);
+  seedAlert(fake, { severity: "CRITICAL", lastValue: 28, lastRecordedAt: minute(29), nominalSince: minute(25) });
+  seedNotification(fake, "alert-open", minute(0));
+  // Notification.recordedAt is DateTime? — DEVICE_* rows leave it null — and no constraint ties
+  // "has an alertId" to "has a recordedAt". Postgres orders DESC NULLS FIRST, so an unfiltered query
+  // would return THIS row, not the minute-0 one.
+  fake.notifications.push({ profileId: "p1", alertId: "alert-open", kind: "DEVICE_OFFLINE", recordedAt: null });
+  seedReading(fake, 25, at(30 * MIN - 1));
+
+  await evaluate();
+
+  assert.deepEqual(argsOf(fake, "tx.notification.findFirst")[0], {
+    where: { alertId: "alert-open", recordedAt: { not: null } },
+    orderBy: { recordedAt: "desc" },
+    select: { recordedAt: true },
+  });
+  // Throttled against the real last notification (minute 0), just under 30 minutes ago. Without the
+  // filter this re-worsening would have notified instead.
+  assert.deepEqual(fake.ops(), [...PREFIX, "tx.notification.findFirst", "tx.alert.update"]);
+  assert.equal(fake.notifications.length, 2);
+});
+
 test("re-worsening to an already-reached CRITICAL: renotifies as ALERT_OPENED, not ESCALATED", async (t) => {
   const fake = setup(t);
   seedAlert(fake, { severity: "CRITICAL", lastValue: 28, lastRecordedAt: minute(29), nominalSince: minute(25) });

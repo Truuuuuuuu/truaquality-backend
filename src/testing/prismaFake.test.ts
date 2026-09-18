@@ -246,6 +246,32 @@ test("taking the same lock twice in one transaction does not deadlock (re-entran
   });
 });
 
+test("tx.notification.findFirst orders DESC NULLS FIRST, as Postgres does", async () => {
+  const fake = createPrismaFake();
+  fake.notifications.push({ profileId: "p1", alertId: "a1", kind: "ALERT_OPENED", recordedAt: T0 });
+  fake.notifications.push({ profileId: "p1", alertId: "a1", kind: "DEVICE_OFFLINE", recordedAt: null });
+
+  await fake.$transaction(async (tx) => {
+    const newest = await tx.notification.findFirst({ where: { alertId: "a1" } });
+    // A null recordedAt sorts ahead of every value under `ORDER BY "recordedAt" DESC`, so this is the
+    // row real Prisma returns. Treating null as -Infinity put it last and hid that from the traces.
+    assert.deepEqual(newest, { recordedAt: null });
+  });
+});
+
+test("tx.notification.findFirst honours a recordedAt: { not: null } filter", async () => {
+  const fake = createPrismaFake();
+  fake.notifications.push({ profileId: "p1", alertId: "a1", kind: "ALERT_OPENED", recordedAt: T0 });
+  fake.notifications.push({ profileId: "p1", alertId: "a1", kind: "DEVICE_OFFLINE", recordedAt: null });
+
+  await fake.$transaction(async (tx) => {
+    const newest = await tx.notification.findFirst({
+      where: { alertId: "a1", recordedAt: { not: null } },
+    });
+    assert.deepEqual(newest, { recordedAt: T0 });
+  });
+});
+
 test("a committed transaction keeps its writes (the rollback is not unconditional)", async () => {
   const fake = createPrismaFake();
   seedAlert(fake);
