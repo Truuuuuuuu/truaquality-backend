@@ -4,8 +4,8 @@ import type { ParameterId } from "./parameters.ts";
 import { prisma } from "./prisma.ts";
 
 // The decision rules (open / escalate / renotify / resolve and their timing) live in alertRules.ts; this file
-// is the transaction, lock, write and notify shell around them.
-export { ALERT_RECOVERY_MS, ALERT_RENOTIFY_MS } from "./alertRules.ts";
+// is the transaction, lock, write and notify shell around them. Import the constants from there, not through
+// here — this module pulls in prisma.ts's live pool and notify.ts.
 
 // Re-evaluates one pond parameter's alert against its newest stored reading — not the incoming batch, so a
 // buffered backlog of older samples can never open or resolve an alert out of order. `pondType` decides which

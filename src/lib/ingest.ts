@@ -5,11 +5,9 @@ import { evaluatePondAlerts } from "./alerts.ts";
 import { classifySamples, type RejectedValue } from "./ingestRules.ts";
 import { prisma } from "./prisma.ts";
 
-// The constants and RejectedValue now live in ingestRules.ts (the pure decision logic); re-exported so existing
-// importers — readingRollup.ts uses MAX_SAMPLE_AGE_MS — keep working unchanged.
-export { MAX_SAMPLE_AGE_MS, MAX_SAMPLE_SKEW_MS } from "./ingestRules.ts";
-export type { RejectedValue } from "./ingestRules.ts";
-
+// The constants and RejectedValue live in ingestRules.ts (the pure decision logic). Import them from
+// there: re-exporting them here would mean anything wanting a constant had to pull in prisma.ts's live
+// pool and alerts.ts -> notify.ts, which is the whole thing the extraction was for.
 export type IngestResult =
   | { status: "unassigned" }
   | { status: "stored"; accepted: number; duplicates: number; rejected: RejectedValue[] };

@@ -1,5 +1,7 @@
 import type { Prisma } from "../generated/prisma/client.ts";
-import { MAX_SAMPLE_AGE_MS } from "./ingest.ts";
+// From ingestRules.ts, not ingest.ts: the constant is all this module needs, and ingest.ts drags in
+// prisma.ts (a live PrismaPg pool) and alerts.ts -> notify.ts with it.
+import { MAX_SAMPLE_AGE_MS } from "./ingestRules.ts";
 import { prisma } from "./prisma.ts";
 
 // Keeps raw per-minute Reading rows small enough for Supabase's free-tier storage while ReadingHourly
