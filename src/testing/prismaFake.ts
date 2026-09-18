@@ -48,7 +48,10 @@ export type FakeNotification = {
 export type PrismaFakeOptions = {
   pondType?: string | null;
   activeProfileIds?: string[];
+  // Throws before the callback runs (the transaction never started).
   failTransaction?: boolean;
+  // Throws after the callback ran (a failure at commit): the work it did must be rolled back.
+  failInTransaction?: boolean;
   createManyCount?: (rows: FakeReading[]) => number;
 };
 
@@ -179,10 +182,28 @@ export function createPrismaFake(opts: PrismaFakeOptions = {}) {
     },
   };
 
+  // failTransaction models "the transaction could not start"; failInTransaction models the failure that
+  // actually matters and had no way to be expressed before — a notification.createMany conflict, a lost
+  // connection after tx.alert.update — i.e. work done inside the callback that must not survive.
+  //
+  // The rollback is what makes either one faithful: writes go straight into the arrays, so without a
+  // snapshot an aborted transaction left partial state behind, the exact opposite of a real one. A
+  // future bug where an alert is escalated but its notifications are not written would have passed.
   const $transaction = async (fn: (client: typeof tx) => Promise<unknown>) => {
     record("$transaction", null);
     if (opts.failTransaction) throw new Error("fake transaction failure");
-    return fn(tx);
+    // alerts[] rows are mutated in place by update, so they need copying; notification rows are only
+    // ever appended, so the array copy is enough. readings are never written inside a transaction.
+    const snapshot = { alerts: alerts.map((a) => ({ ...a })), notifications: [...notifications] };
+    try {
+      const result = await fn(tx);
+      if (opts.failInTransaction) throw new Error("fake in-transaction failure");
+      return result;
+    } catch (err) {
+      alerts.splice(0, alerts.length, ...snapshot.alerts);
+      notifications.splice(0, notifications.length, ...snapshot.notifications);
+      throw err;
+    }
   };
 
   return {

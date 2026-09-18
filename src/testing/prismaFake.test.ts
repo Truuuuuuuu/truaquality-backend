@@ -78,3 +78,90 @@ test("tx.alert.update returns a copy, so mutating the result cannot corrupt the 
 
   assert.equal(fake.alerts[0]!.lastValue, 22);
 });
+
+test("a throw inside the transaction rolls back every write made in it", async () => {
+  const fake = createPrismaFake();
+  seedAlert(fake);
+
+  await assert.rejects(
+    fake.$transaction(async (tx) => {
+      await tx.alert.update({ where: { id: "alert-seed" }, data: { severity: "CRITICAL" } });
+      await tx.notification.createMany({
+        data: [{ profileId: "p1", alertId: "alert-seed", kind: "ALERT_ESCALATED", recordedAt: T0 }],
+      });
+      throw new Error("boom");
+    }),
+    /boom/,
+  );
+
+  assert.equal(fake.alerts[0]!.severity, "WARNING", "the escalation must not survive the abort");
+  assert.equal(fake.notifications.length, 0, "the notification rows must not survive the abort");
+});
+
+test("an alert created inside an aborted transaction is rolled back too", async () => {
+  const fake = createPrismaFake();
+
+  await assert.rejects(
+    fake.$transaction(async (tx) => {
+      await tx.alert.create({
+        data: {
+          pondId: "pond-1",
+          parameter: "temperature",
+          severity: "WARNING",
+          openedAt: T0,
+          lastValue: 25,
+          lastRecordedAt: T0,
+        },
+      });
+      throw new Error("boom");
+    }),
+    /boom/,
+  );
+
+  assert.equal(fake.alerts.length, 0);
+});
+
+test("failInTransaction fails after the callback ran, and that work is rolled back", async () => {
+  const fake = createPrismaFake({ failInTransaction: true });
+  seedAlert(fake);
+  let callbackFinished = false;
+
+  await assert.rejects(
+    fake.$transaction(async (tx) => {
+      await tx.alert.update({ where: { id: "alert-seed" }, data: { severity: "CRITICAL" } });
+      callbackFinished = true;
+    }),
+    /fake in-transaction failure/,
+  );
+
+  assert.equal(callbackFinished, true, "failInTransaction must model a failure at commit, not at start");
+  assert.equal(fake.alerts[0]!.severity, "WARNING");
+});
+
+test("failTransaction still fails before the callback runs at all", async () => {
+  const fake = createPrismaFake({ failTransaction: true });
+  let ran = false;
+
+  await assert.rejects(
+    fake.$transaction(async () => {
+      ran = true;
+    }),
+    /fake transaction failure/,
+  );
+  assert.equal(ran, false);
+});
+
+test("a committed transaction keeps its writes (the rollback is not unconditional)", async () => {
+  const fake = createPrismaFake();
+  seedAlert(fake);
+
+  await fake.$transaction(async (tx) => {
+    await tx.alert.update({ where: { id: "alert-seed" }, data: { severity: "CRITICAL" } });
+    await tx.notification.createMany({
+      data: [{ profileId: "p1", alertId: "alert-seed", kind: "ALERT_ESCALATED", recordedAt: T0 }],
+    });
+  });
+
+  assert.equal(fake.alerts[0]!.severity, "CRITICAL");
+  assert.equal(fake.notifications.length, 1);
+});

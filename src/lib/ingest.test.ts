@@ -134,6 +134,39 @@ test("alert evaluation failure is logged and does not fail the ingest", async (t
   assert.deepEqual(fake.ops(), ["device.update", "reading.createMany", "pond.findUnique", "$transaction"]);
 });
 
+test("a failure INSIDE the alert transaction is logged, and its partial writes are rolled back", async (t) => {
+  // The other failure case models "the transaction could not start", which never reaches the alert
+  // writes. This one is the case that actually matters: the callback opened an alert and queued its
+  // notifications, then the commit failed — none of it may survive, and ingest must still succeed.
+  const fake = createPrismaFake({ failInTransaction: true });
+  fake.install(t);
+  const errorMock = t.mock.method(console, "error", () => {});
+
+  const result = await ingestSamples(device(), simulatorBatch(25, minute(0)), minute(0));
+
+  assert.deepEqual(result, { status: "stored", accepted: 1, duplicates: 0, rejected: [] });
+  assert.equal(errorMock.mock.callCount(), 1);
+  const [message, err] = errorMock.mock.calls[0].arguments as [string, Error];
+  assert.equal(message, "[alerts] evaluation failed for pond pond-1:");
+  assert.equal(err.message, "fake in-transaction failure");
+  // The callback ran all the way through — the alert and its notification were written, then undone.
+  assert.deepEqual(fake.ops(), [
+    "device.update",
+    "reading.createMany",
+    "pond.findUnique",
+    "$transaction",
+    "tx.$executeRaw",
+    "tx.reading.findFirst",
+    "tx.alert.findFirst",
+    "tx.alert.create",
+    "tx.profile.findMany",
+    "tx.notification.createMany",
+  ]);
+  assert.equal(fake.alerts.length, 0, "the opened alert must not survive the abort");
+  assert.equal(fake.notifications.length, 0, "its notifications must not survive the abort");
+  assert.equal(fake.readings.length, 1, "the readings were committed before the alert transaction");
+});
+
 test("firmwareVersion absent or empty is not written to the device", async (t) => {
   const fake = createPrismaFake();
   fake.install(t);
