@@ -33,7 +33,31 @@ Current surface area:
 
 - Start: `npm run start` (`node src/index.ts`)
 - Dev with reload: `npm run dev` (`node --watch src/index.ts`)
-- Typecheck: `npx tsc --noEmit -p tsconfig.json` (there is no `test`/`typecheck` npm script yet)
+- Typecheck: `npm run typecheck` (`tsc --noEmit -p tsconfig.json`; also typechecks test files)
+- Tests: `npm test`
+  - Runs `src/**/*.test.ts` with Node's native runner (`node --test`), so test files get the same `.ts`
+    resolution and type stripping as production. Relative imports in tests still use `.ts`.
+  - Env comes from the committed `test.env` (dummy values only — never put a real secret or non-local URL
+    there).
+  - **Variables exported in your shell OVERRIDE `test.env`.** `src/testing/globalSetup.ts` refuses the whole
+    run ("refusing to run") unless `DATABASE_URL` (and `DIRECT_URL`/`SUPABASE_URL`, if set) point at
+    `localhost`/`127.0.0.1`/`[::1]`, so a stray production URL in your shell stops the suite instead of
+    reaching the real database.
+  - A fresh clone needs `npx prisma generate` before the first `npm test` (the generated client is
+    gitignored).
+  - Single-file quick run:
+    `node --env-file=test.env --test --test-global-setup=./src/testing/globalSetup.ts src/lib/<file>.test.ts`
+  - Coverage: `npm run test:coverage`.
+- Testing conventions:
+  - Mock Prisma with `t.mock.property(prisma, "<delegate>", fake)`. Never `t.mock.method(prisma.<model>, …)`
+    (Prisma 7 delegates are Proxies) and never `mock.module`.
+  - Tests must never import `src/index.ts`, `readingsSubscriber.ts`, `supabaseAdmin.ts`, `routes/*`, or
+    `scripts/*` — they read secrets/connect at import time.
+  - Ingest/alert decisions live in the pure `src/lib/ingestRules.ts` and `src/lib/alertRules.ts`; the Prisma
+    shells around them are covered by trace tests in `ingest.test.ts`/`alerts.test.ts` using
+    `src/testing/prismaFake.ts`. Those traces are the behavior-preservation baseline — change them only when
+    behavior is meant to change.
+  - Auth tests mint ES256 JWTs (`src/testing/jwt.ts`) and stub the JWKS fetch; no Supabase network calls.
 - Create the first admin (or promote an existing user):
   `npm run seed:admin -- --email <email> --name "<full name>"`
 - Generate Prisma client after any schema change: `npx prisma generate`.
@@ -148,6 +172,9 @@ resolution of `tsc`/`tsx`/`ts-node`:
 - `npm run purge:parameters -- --parameter <id> [--parameter ...] [--apply]` (`scripts/purge-parameters.ts`)
   deletes the stored readings, hourly summaries, and alerts (plus their notifications) of a parameter that has
   been removed from `PARAMETER_BOUNDS`. Dry run unless `--apply`; refuses live parameter ids.
+- `npm run generate:signing-vectors` (`scripts/generate-signing-vectors.ts`) is **dev only**: regenerates
+  `src/lib/__fixtures__/signing-vectors.v1.json` from the real `signMessage`. The firmware mirrors these
+  vectors byte-for-byte (Phase 2), so changing them means updating the firmware copy too.
 - `npm run seed:admin` (`scripts/seed-admin.ts`) bootstraps the first admin the same way. It is
   idempotent: an existing profile just gets promoted.
 - Inviting real users requires **custom SMTP** in Supabase. The built-in mailer is heavily rate-limited.
@@ -356,4 +383,6 @@ production.
 ## Known follow-ups (not yet built)
 
 - Finer-grained roles for pond/device management (today: any signed-in user reads, only `ADMIN` writes).
-- No tests anywhere in the repo and no CI; `npm test` is still the npm placeholder.
+- No CI yet; `npm test` must be run locally.
+- `readingsSubscriber.handleReadingsMessage` (signature-before-lastSeenAt ordering, rate limit) is not yet
+  unit-tested; it needs extracting from the module that reads `MQTT_*` at import.
