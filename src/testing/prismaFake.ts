@@ -117,9 +117,39 @@ export function createPrismaFake(opts: PrismaFakeOptions = {}) {
     },
   };
 
-  const tx = {
+  // Transaction-scoped advisory locks, modelled rather than recorded. Asserting only that the SQL text
+  // and the key string are right left the property the lock exists for — that two concurrently handled
+  // MQTT messages cannot both see "no open alert" and each open one — untested, and the suite would have
+  // stayed green with the lock line deleted. One FIFO queue per key, released when the transaction ends;
+  // re-entrant within a transaction, as Postgres advisory locks are.
+  const lockTails = new Map<string, Promise<void>>();
+
+  async function acquireLock(key: string): Promise<() => void> {
+    const waitFor = lockTails.get(key) ?? Promise.resolve();
+    let release = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    lockTails.set(
+      key,
+      waitFor.then(() => held),
+    );
+    await waitFor;
+    return release;
+  }
+
+  // One client per transaction so it can track the locks that transaction holds.
+  const createTx = (held: { keys: Set<string>; releases: Array<() => void> }) => ({
     $executeRaw: async (strings: TemplateStringsArray, ...values: unknown[]) => {
-      record("tx.$executeRaw", { sql: strings.join("?"), values });
+      const sql = strings.join("?");
+      record("tx.$executeRaw", { sql, values });
+      if (sql.includes("pg_advisory_xact_lock")) {
+        const key = String(values[0]);
+        if (!held.keys.has(key)) {
+          held.keys.add(key);
+          held.releases.push(await acquireLock(key));
+        }
+      }
       return 1;
     },
     reading: {
@@ -146,6 +176,16 @@ export function createPrismaFake(opts: PrismaFakeOptions = {}) {
       },
       create: async (args: { data: Omit<FakeAlert, "id" | "nominalSince" | "resolvedAt"> }) => {
         record("tx.alert.create", args);
+        // "One open alert per (pond, parameter)" is what the advisory lock in alerts.ts protects. The
+        // fake enforces it so a lost or deleted lock surfaces as a failure instead of two episodes.
+        const alreadyOpen = alerts.some(
+          (a) => a.pondId === args.data.pondId && a.parameter === args.data.parameter && a.resolvedAt === null,
+        );
+        if (alreadyOpen) {
+          throw new Error(
+            `fake: a second open alert for the same pond/parameter (${args.data.pondId}/${args.data.parameter}) — lost lock?`,
+          );
+        }
         alertSeq++;
         const alert: FakeAlert = { id: `alert-${alertSeq}`, nominalSince: null, resolvedAt: null, ...args.data };
         alerts.push(alert);
@@ -180,7 +220,9 @@ export function createPrismaFake(opts: PrismaFakeOptions = {}) {
         return (opts.activeProfileIds ?? ["p1"]).map((id) => ({ id }));
       },
     },
-  };
+  });
+
+  type FakeTx = ReturnType<typeof createTx>;
 
   // failTransaction models "the transaction could not start"; failInTransaction models the failure that
   // actually matters and had no way to be expressed before — a notification.createMany conflict, a lost
@@ -189,20 +231,24 @@ export function createPrismaFake(opts: PrismaFakeOptions = {}) {
   // The rollback is what makes either one faithful: writes go straight into the arrays, so without a
   // snapshot an aborted transaction left partial state behind, the exact opposite of a real one. A
   // future bug where an alert is escalated but its notifications are not written would have passed.
-  const $transaction = async (fn: (client: typeof tx) => Promise<unknown>) => {
+  const $transaction = async (fn: (client: FakeTx) => Promise<unknown>) => {
     record("$transaction", null);
     if (opts.failTransaction) throw new Error("fake transaction failure");
     // alerts[] rows are mutated in place by update, so they need copying; notification rows are only
     // ever appended, so the array copy is enough. readings are never written inside a transaction.
     const snapshot = { alerts: alerts.map((a) => ({ ...a })), notifications: [...notifications] };
+    const held = { keys: new Set<string>(), releases: [] as Array<() => void> };
     try {
-      const result = await fn(tx);
+      const result = await fn(createTx(held));
       if (opts.failInTransaction) throw new Error("fake in-transaction failure");
       return result;
     } catch (err) {
       alerts.splice(0, alerts.length, ...snapshot.alerts);
       notifications.splice(0, notifications.length, ...snapshot.notifications);
       throw err;
+    } finally {
+      // Advisory locks are transaction-scoped, so they go on commit AND on abort.
+      for (const release of held.releases) release();
     }
   };
 

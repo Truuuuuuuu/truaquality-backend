@@ -351,6 +351,27 @@ test("pondType BRACKISH and null produce identical outcomes today", async (t) =>
   assert.deepEqual(outcomes[0], outcomes[1]);
 });
 
+test("two concurrent evaluations open exactly one episode (the advisory lock serializes them)", async (t) => {
+  // The property the lock in alerts.ts exists for: two MQTT messages handled concurrently must not both
+  // see "no open alert" and each open one. The fake models pg_advisory_xact_lock as a real per-key
+  // mutex and refuses a second open alert for the same (pond, parameter), so deleting the lock line
+  // fails this test instead of leaving the suite green.
+  const fake = setup(t);
+  seedReading(fake, 25, minute(0));
+
+  await Promise.all([evaluate(), evaluate()]);
+
+  assert.equal(fake.alerts.length, 1);
+  assert.equal(fake.alerts[0].severity, "WARNING");
+  // The second evaluation ran after the first committed, so it saw the episode and found its reading
+  // already accounted for (stale) — one notification, not two.
+  assert.deepEqual(
+    fake.notifications.map((n) => n.kind),
+    ["ALERT_OPENED"],
+  );
+  assert.equal(fake.ops().filter((op) => op === "tx.alert.create").length, 1);
+});
+
 test("pond.findUnique runs exactly once per evaluatePondAlerts call, one transaction per parameter", async (t) => {
   const fake = setup(t);
   seedReading(fake, 28, minute(0));

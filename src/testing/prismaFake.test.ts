@@ -27,6 +27,15 @@ const seedAlert = (fake: ReturnType<typeof createPrismaFake>, overrides: Partial
 
 const OPEN_WHERE = { where: { pondId: "pond-1", parameter: "temperature", resolvedAt: null } };
 
+const OPEN_ALERT_DATA = {
+  pondId: "pond-1",
+  parameter: "temperature",
+  severity: "WARNING" as const,
+  openedAt: T0,
+  lastValue: 25,
+  lastRecordedAt: T0,
+};
+
 test("tx.alert.findFirst returns a detached snapshot, not the stored row", async () => {
   const fake = createPrismaFake();
   const stored = seedAlert(fake);
@@ -149,6 +158,92 @@ test("failTransaction still fails before the callback runs at all", async () => 
     /fake transaction failure/,
   );
   assert.equal(ran, false);
+});
+
+test("tx.alert.create refuses a second open alert for the same pond and parameter", async () => {
+  const fake = createPrismaFake();
+  seedAlert(fake);
+
+  await assert.rejects(
+    fake.$transaction((tx) => tx.alert.create({ data: { ...OPEN_ALERT_DATA, severity: "CRITICAL" } })),
+    /a second open alert for the same pond\/parameter/,
+  );
+  assert.equal(fake.alerts.length, 1);
+});
+
+test("tx.alert.create allows a new episode once the previous one is resolved", async () => {
+  const fake = createPrismaFake();
+  seedAlert(fake, { resolvedAt: T0 });
+
+  await fake.$transaction((tx) => tx.alert.create({ data: OPEN_ALERT_DATA }));
+  assert.equal(fake.alerts.length, 2);
+});
+
+test("tx.alert.create allows a concurrent episode on a different parameter", async () => {
+  const fake = createPrismaFake();
+  seedAlert(fake);
+
+  await fake.$transaction((tx) => tx.alert.create({ data: { ...OPEN_ALERT_DATA, parameter: "turbidity" } }));
+  assert.equal(fake.alerts.length, 2);
+});
+
+test("the advisory lock serializes transactions on the same key", async () => {
+  const fake = createPrismaFake();
+  const order: string[] = [];
+
+  const hold = (name: string, ms: number) =>
+    fake.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"alert:pond-1:temperature"}))`;
+      order.push(`${name}:in`);
+      await new Promise((resolve) => setTimeout(resolve, ms));
+      order.push(`${name}:out`);
+    });
+
+  // B would finish inside A's window if the lock were not honoured.
+  await Promise.all([hold("A", 20), hold("B", 0)]);
+  assert.deepEqual(order, ["A:in", "A:out", "B:in", "B:out"]);
+});
+
+test("a different lock key is not blocked", async () => {
+  const fake = createPrismaFake();
+  const order: string[] = [];
+
+  const hold = (name: string, key: string, ms: number) =>
+    fake.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
+      order.push(`${name}:in`);
+      await new Promise((resolve) => setTimeout(resolve, ms));
+      order.push(`${name}:out`);
+    });
+
+  await Promise.all([hold("A", "alert:pond-1:temperature", 20), hold("B", "alert:pond-1:turbidity", 0)]);
+  assert.deepEqual(order, ["A:in", "B:in", "B:out", "A:out"]);
+});
+
+test("the lock is released when the transaction aborts, not only when it commits", async () => {
+  const fake = createPrismaFake();
+
+  await assert.rejects(
+    fake.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"alert:pond-1:temperature"}))`;
+      throw new Error("boom");
+    }),
+    /boom/,
+  );
+
+  // Would hang forever if an aborted transaction kept its lock.
+  await fake.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"alert:pond-1:temperature"}))`;
+  });
+});
+
+test("taking the same lock twice in one transaction does not deadlock (re-entrant, as in Postgres)", async () => {
+  const fake = createPrismaFake();
+
+  await fake.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"alert:pond-1:temperature"}))`;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"alert:pond-1:temperature"}))`;
+  });
 });
 
 test("a committed transaction keeps its writes (the rollback is not unconditional)", async () => {
