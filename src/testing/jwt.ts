@@ -1,3 +1,4 @@
+import "./guardEnv.ts";
 import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
 import type { TestContext } from "node:test";
 

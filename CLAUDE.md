@@ -42,7 +42,12 @@ Current surface area:
   - **Variables exported in your shell OVERRIDE `test.env`.** `src/testing/globalSetup.ts` refuses the whole
     run ("refusing to run") unless `DATABASE_URL` (and `DIRECT_URL`/`SUPABASE_URL`, if set) point at
     `localhost`/`127.0.0.1`/`[::1]`, so a stray production URL in your shell stops the suite instead of
-    reaching the real database.
+    reaching the real database. A `?host=`/`?hostaddr=` query parameter is refused too: `pg` lets it
+    override the host in the URL, so "the hostname says localhost" is not enough.
+  - The same check also runs on import of `src/testing/guardEnv.ts`, which `prismaFake.ts`, `http.ts` and
+    `jwt.ts` all pull in. So a run that skips `--test-global-setup` (an IDE gutter action, a hand-typed
+    `node --test src/...`) is still refused — you do not have to remember the flag for the guard to work,
+    only for `--env-file`.
   - A fresh clone needs `npx prisma generate` before the first `npm test` (the generated client is
     gitignored).
   - Single-file quick run:

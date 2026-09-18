@@ -158,27 +158,36 @@ test("unparseable-URL message does not echo the raw value", () => {
 // over --env-file. Targets a *.fixture.ts file so it never recurses into this suite.
 const BACKEND_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 
-function runGuardProbe(databaseUrl: string) {
+function runProbe(args: string[], databaseUrl: string) {
   // Under `node --test` this file runs in a child that carries NODE_TEST_CONTEXT. Passed on,
   // it makes the probe think it is a nested run and skip its files ("run() is being called
   // recursively"), so drop it to get a genuine top-level runner like `npm test`.
   const { NODE_TEST_CONTEXT: _nested, ...parentEnv } = process.env;
-  const result = spawnSync(
-    process.execPath,
+  const result = spawnSync(process.execPath, args, {
+    cwd: BACKEND_ROOT,
+    env: { ...parentEnv, DATABASE_URL: databaseUrl },
+    encoding: "utf8",
+  });
+  return { status: result.status, output: `${result.stdout}${result.stderr}` };
+}
+
+// The wiring `npm test` actually uses.
+const runGuardProbe = (databaseUrl: string) =>
+  runProbe(
     [
       "--env-file=test.env",
       "--test",
       "--test-global-setup=./src/testing/globalSetup.ts",
       "src/testing/__fixtures__/guard-probe.fixture.ts",
     ],
-    {
-      cwd: BACKEND_ROOT,
-      env: { ...parentEnv, DATABASE_URL: databaseUrl },
-      encoding: "utf8",
-    },
+    databaseUrl,
   );
-  return { status: result.status, output: `${result.stdout}${result.stderr}` };
-}
+
+// WR-01: a single-file run the way an IDE gutter action or a hand-typed command does it — no
+// --test-global-setup and no --env-file. The only thing left standing is guardEnv.ts, which the
+// fixture pulls in through prismaFake.ts.
+const runUnguardedRunnerProbe = (databaseUrl: string) =>
+  runProbe(["--test", "src/testing/__fixtures__/guard-import-probe.fixture.ts"], databaseUrl);
 
 test("test runner refuses a shell-exported remote DATABASE_URL before any test loads", () => {
   const { status, output } = runGuardProbe(
@@ -206,4 +215,19 @@ test("test runner allows a shell-exported localhost DATABASE_URL", () => {
   const { status, output } = runGuardProbe("postgresql://test:test@127.0.0.1:1/x");
   assert.equal(status, 0, output);
   assert.match(output, /guard probe ran/);
+});
+
+test("a run without --test-global-setup or --env-file is still refused (guardEnv.ts on import)", () => {
+  const { status, output } = runUnguardedRunnerProbe("postgres://u:secretpw@db.example.supabase.co:5432/postgres");
+  assert.notEqual(status, 0);
+  assert.match(output, /refusing to run: DATABASE_URL host is/);
+  assert.ok(!output.includes("secretpw"), "guard output must not contain the password");
+  assert.doesNotMatch(output, /✔ guard import probe ran/);
+  assert.doesNotMatch(output, /ok \d+ - guard import probe ran/);
+});
+
+test("a run without --test-global-setup still proceeds on a localhost DATABASE_URL", () => {
+  const { status, output } = runUnguardedRunnerProbe("postgresql://test:test@127.0.0.1:1/x");
+  assert.equal(status, 0, output);
+  assert.match(output, /guard import probe ran/);
 });

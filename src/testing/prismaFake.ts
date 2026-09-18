@@ -1,3 +1,6 @@
+// Must come before ../lib/prisma.ts: importing that constructs the PrismaPg pool from DATABASE_URL,
+// so the guard has to have refused a non-local one already.
+import "./guardEnv.ts";
 import type { TestContext } from "node:test";
 import { prisma } from "../lib/prisma.ts";
 

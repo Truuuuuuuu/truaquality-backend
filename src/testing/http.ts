@@ -1,3 +1,4 @@
+import "./guardEnv.ts";
 import type { NextFunction, Request, Response } from "express";
 
 // Minimal Express req/res fakes for exercising middleware directly, without an HTTP server.
