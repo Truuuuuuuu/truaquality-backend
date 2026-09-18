@@ -81,6 +81,8 @@ export function createPrismaFake(opts: PrismaFakeOptions = {}) {
   const device = {
     update: async (args: { where: { id: string }; data: Record<string, unknown> }) => {
       record("device.update", args);
+      // A fresh object, not args.data itself, so a caller mutating the result cannot reach back into
+      // the arguments it passed in.
       return { id: args.where.id, ...args.data };
     },
   };
@@ -127,28 +129,31 @@ export function createPrismaFake(opts: PrismaFakeOptions = {}) {
         return newest ? { value: newest.value, recordedAt: newest.recordedAt } : null;
       },
     },
+    // Every delegate returns a DETACHED copy, because real Prisma returns a snapshot of the row as it
+    // was read. Handing back the stored object instead made read-after-write bugs invisible: alerts.ts
+    // reads episode.severity for the ALERT_RESOLVED notification *after* tx.alert.update, and with a
+    // live object that read would see the new value under the fake and the old value in production.
     alert: {
       findFirst: async (args: { where: Where }) => {
         record("tx.alert.findFirst", args);
-        return (
-          alerts.find(
-            (a) => a.pondId === args.where.pondId && a.parameter === args.where.parameter && a.resolvedAt === null,
-          ) ?? null
+        const found = alerts.find(
+          (a) => a.pondId === args.where.pondId && a.parameter === args.where.parameter && a.resolvedAt === null,
         );
+        return found ? { ...found } : null;
       },
       create: async (args: { data: Omit<FakeAlert, "id" | "nominalSince" | "resolvedAt"> }) => {
         record("tx.alert.create", args);
         alertSeq++;
         const alert: FakeAlert = { id: `alert-${alertSeq}`, nominalSince: null, resolvedAt: null, ...args.data };
         alerts.push(alert);
-        return alert;
+        return { ...alert };
       },
       update: async (args: { where: { id: string }; data: Partial<FakeAlert> }) => {
         record("tx.alert.update", args);
         const alert = alerts.find((a) => a.id === args.where.id);
         if (!alert) throw new Error(`fake: no alert ${args.where.id}`);
         Object.assign(alert, args.data);
-        return alert;
+        return { ...alert };
       },
     },
     notification: {
@@ -185,7 +190,9 @@ export function createPrismaFake(opts: PrismaFakeOptions = {}) {
     readings,
     alerts,
     notifications,
-    tx,
+    // Exposed so tests OF the double (prismaFake.test.ts) can drive a transaction directly and
+    // typed, without going through a production call path.
+    $transaction,
     ops: () => calls.map((c) => c.op),
     install(t: TestContext) {
       t.mock.property(prisma, "device", device as never);
