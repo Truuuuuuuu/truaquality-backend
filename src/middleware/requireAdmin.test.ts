@@ -34,6 +34,9 @@ test("USER profile -> 403 admin access required", async () => {
 test("ADMIN profile -> next()", async () => {
   const r = await run(requireAdmin, withProfile("ADMIN"));
   assert.equal(r.nextCalls, 1);
+  assert.equal(r.nextError, undefined, "must call next() with no error");
+  // undefined, not 200: an allowed request must leave the response untouched.
+  assert.equal(r.statusCode, undefined);
   assert.equal(r.body, undefined);
 });
 
@@ -49,6 +52,7 @@ test("chained: valid token for an ACTIVE USER passes requireAuth, then requireAd
 
   const auth = await run(requireAuth, req);
   assert.equal(auth.nextCalls, 1, "a valid USER token must pass requireAuth");
+  assert.equal(auth.nextError, undefined, "requireAuth must not forward an error here");
 
   const admin = await run(requireAdmin, req);
   assert.equal(admin.statusCode, 403);

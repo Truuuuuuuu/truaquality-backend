@@ -74,7 +74,10 @@ test("valid token for an ACTIVE profile -> next() with user, profile, token atta
   const token = validToken();
   const r = await run(requireAuth, fakeReq({ Authorization: `Bearer ${token}` }));
   assert.equal(r.nextCalls, 1);
-  assert.equal(r.statusCode, 200);
+  assert.equal(r.nextError, undefined, "must call next() with no error");
+  // undefined, not 200: this middleware must not touch the response on the happy path. The helper used
+  // to seed statusCode to 200, so this assertion could not tell "responded 200" from "never responded".
+  assert.equal(r.statusCode, undefined);
   assert.equal(r.body, undefined);
   assert.equal(r.req.user?.sub, "u1");
   assert.equal(r.req.profile?.id, "u1");
@@ -89,6 +92,8 @@ test("valid token for an INVITED profile -> promoted to ACTIVE exactly once and 
   const { fetchMock, update } = setup(t, profile("INVITED"));
   const r = await run(requireAuth, fakeReq({ Authorization: `Bearer ${validToken()}` }));
   assert.equal(r.nextCalls, 1);
+  assert.equal(r.nextError, undefined, "must call next() with no error");
+  assert.equal(r.statusCode, undefined);
   assert.equal(update.mock.callCount(), 1);
   assert.deepEqual(update.mock.calls[0]!.arguments[0], { where: { id: "u1" }, data: { status: "ACTIVE" } });
   assert.equal(r.req.profile?.status, "ACTIVE");
