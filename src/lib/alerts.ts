@@ -102,6 +102,15 @@ async function evaluateParameter(pondId: string, parameter: ParameterId, pondTyp
         }
         return;
       }
+
+      // A new AlertStep variant with no case here would otherwise fall off the end of this callback:
+      // the transaction would commit having written nothing, no alert would open, escalate or resolve,
+      // and nothing would log or throw. `never` turns that into a compile error, and the throw covers a
+      // step that arrives at runtime from something TypeScript did not check.
+      default: {
+        const unexpected: never = step;
+        throw new Error(`[alerts] unhandled alert step ${JSON.stringify(unexpected)}`);
+      }
     }
   });
 }
