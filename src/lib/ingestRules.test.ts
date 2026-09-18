@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { classifySamples, MAX_SAMPLE_AGE_MS, MAX_SAMPLE_SKEW_MS } from "./ingestRules.ts";
 
-// Characterization of today's (temperature-only) ingest decisions. Pure: no DB, no env, no Date.now() — every
+// Characterization of today's (temperature-only) ingest decisions. Pure: no DB, no env, no wall clock — every
 // timestamp is derived from a fixed receivedAt so the boundaries are exact.
 const R = new Date("2030-01-01T00:00:00Z");
 const DAY_MS = 24 * 60 * 60 * 1000;
