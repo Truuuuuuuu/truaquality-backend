@@ -50,6 +50,21 @@ export function assertLocalUrl(name: string, raw: string | undefined, required: 
   }
 }
 
+// Credentials that must not exist in a test process at all. test.env leaves them out on purpose so an
+// accidental import of readingsSubscriber.ts or supabaseAdmin.ts fails loudly — but --env-file never
+// overwrites an existing variable, so a developer who sourced .env or exported these for a manual run
+// gets the real ones instead. That means a live MQTT_URL/MQTT_PASSWORD (a second connection on the
+// backend's client id, which disconnects the real subscriber) or a SUPABASE_SECRET_KEY that hands a
+// test an admin client able to ban and delete real users. Absence has to be checked, not assumed.
+const MUST_BE_ABSENT = ["SUPABASE_SECRET_KEY", "MQTT_URL", "MQTT_USERNAME", "MQTT_PASSWORD"];
+
+// Names the variable and never its value.
+export function assertAbsent(name: string, value: string | undefined): void {
+  if (value) {
+    throw new Error(`[test-guard] refusing to run: ${name} must not be set for tests (unset it in this shell)`);
+  }
+}
+
 // Variables exported in the developer's shell override the ones in test.env
 // (`--env-file` never overwrites an existing variable), so a shell holding the real
 // Supabase DATABASE_URL would otherwise point the tests at production. This checks
@@ -58,8 +73,12 @@ export function assertLocalUrl(name: string, raw: string | undefined, required: 
 // - DIRECT_URL: optional; a future migrate-based integration test would use it.
 // - SUPABASE_URL: optional; refusing a remote one stops auth tests from fetching a
 //   real JWKS if a fetch stub is ever forgotten.
+// - SUPABASE_SECRET_KEY / MQTT_*: must be absent entirely (see MUST_BE_ABSENT above).
 export function assertLocalDatabase(env: NodeJS.ProcessEnv): void {
   assertLocalUrl("DATABASE_URL", env.DATABASE_URL, true);
   assertLocalUrl("DIRECT_URL", env.DIRECT_URL, false);
   assertLocalUrl("SUPABASE_URL", env.SUPABASE_URL, false);
+  for (const name of MUST_BE_ABSENT) {
+    assertAbsent(name, env[name]);
+  }
 }

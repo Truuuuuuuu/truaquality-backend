@@ -101,6 +101,43 @@ test("refuses an unparseable DATABASE_URL", () => {
 
 const LOCAL_DB = "postgresql://test:test@127.0.0.1:1/truaquality_test";
 
+// WR-02: test.env omits these on purpose, but --env-file never overwrites a variable the shell
+// already exports — so their absence has to be asserted, not assumed.
+for (const name of ["SUPABASE_SECRET_KEY", "MQTT_URL", "MQTT_USERNAME", "MQTT_PASSWORD"] as const) {
+  test(`refuses a set ${name}`, () => {
+    assert.throws(
+      () => assertLocalDatabase({ DATABASE_URL: LOCAL_DB, [name]: "leaked-from-the-shell" }),
+      new RegExp(`^Error: \\[test-guard\\] refusing to run: ${name} must not be set for tests`),
+    );
+  });
+
+  test(`accepts an empty ${name} (an unset variable and an empty one are both "absent")`, () => {
+    assert.doesNotThrow(() => assertLocalDatabase({ DATABASE_URL: LOCAL_DB, [name]: "" }));
+  });
+
+  test(`the ${name} refusal names the variable but never its value`, () => {
+    assert.throws(
+      () => assertLocalDatabase({ DATABASE_URL: LOCAL_DB, [name]: "sbp_realsecretvalue" }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.ok(!err.message.includes("sbp_realsecretvalue"), "message must not contain the value");
+        return true;
+      },
+    );
+  });
+}
+
+test("accepts the variable set test.env actually ships", () => {
+  assert.doesNotThrow(() =>
+    assertLocalDatabase({
+      DATABASE_URL: LOCAL_DB,
+      DEVICE_SECRET_MASTER_KEY: "test-only-master-key-0123456789abcdef",
+      SUPABASE_URL: "http://127.0.0.1:54321",
+      SUPABASE_PUBLISHABLE_KEY: "test-publishable-key",
+    }),
+  );
+});
+
 for (const name of ["DIRECT_URL", "SUPABASE_URL"] as const) {
   test(`accepts an unset ${name}`, () => {
     assert.doesNotThrow(() => assertLocalDatabase({ DATABASE_URL: LOCAL_DB }));
@@ -158,21 +195,21 @@ test("unparseable-URL message does not echo the raw value", () => {
 // over --env-file. Targets a *.fixture.ts file so it never recurses into this suite.
 const BACKEND_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 
-function runProbe(args: string[], databaseUrl: string) {
+function runProbe(args: string[], shellExports: Record<string, string>) {
   // Under `node --test` this file runs in a child that carries NODE_TEST_CONTEXT. Passed on,
   // it makes the probe think it is a nested run and skip its files ("run() is being called
   // recursively"), so drop it to get a genuine top-level runner like `npm test`.
   const { NODE_TEST_CONTEXT: _nested, ...parentEnv } = process.env;
   const result = spawnSync(process.execPath, args, {
     cwd: BACKEND_ROOT,
-    env: { ...parentEnv, DATABASE_URL: databaseUrl },
+    env: { ...parentEnv, ...shellExports },
     encoding: "utf8",
   });
   return { status: result.status, output: `${result.stdout}${result.stderr}` };
 }
 
 // The wiring `npm test` actually uses.
-const runGuardProbe = (databaseUrl: string) =>
+const runGuardProbe = (databaseUrl: string, shellExports: Record<string, string> = {}) =>
   runProbe(
     [
       "--env-file=test.env",
@@ -180,14 +217,14 @@ const runGuardProbe = (databaseUrl: string) =>
       "--test-global-setup=./src/testing/globalSetup.ts",
       "src/testing/__fixtures__/guard-probe.fixture.ts",
     ],
-    databaseUrl,
+    { DATABASE_URL: databaseUrl, ...shellExports },
   );
 
 // WR-01: a single-file run the way an IDE gutter action or a hand-typed command does it — no
 // --test-global-setup and no --env-file. The only thing left standing is guardEnv.ts, which the
 // fixture pulls in through prismaFake.ts.
 const runUnguardedRunnerProbe = (databaseUrl: string) =>
-  runProbe(["--test", "src/testing/__fixtures__/guard-import-probe.fixture.ts"], databaseUrl);
+  runProbe(["--test", "src/testing/__fixtures__/guard-import-probe.fixture.ts"], { DATABASE_URL: databaseUrl });
 
 test("test runner refuses a shell-exported remote DATABASE_URL before any test loads", () => {
   const { status, output } = runGuardProbe(
@@ -215,6 +252,18 @@ test("test runner allows a shell-exported localhost DATABASE_URL", () => {
   const { status, output } = runGuardProbe("postgresql://test:test@127.0.0.1:1/x");
   assert.equal(status, 0, output);
   assert.match(output, /guard probe ran/);
+});
+
+test("test runner refuses a shell-exported broker credential even with a local DATABASE_URL", () => {
+  const { status, output } = runGuardProbe("postgresql://test:test@127.0.0.1:1/x", {
+    MQTT_URL: "mqtts://real.hivemq.cloud:8883",
+    MQTT_PASSWORD: "brokersecret",
+  });
+  assert.notEqual(status, 0);
+  assert.match(output, /refusing to run: MQTT_URL must not be set/);
+  assert.ok(!output.includes("brokersecret"), "guard output must not contain the password");
+  assert.doesNotMatch(output, /✔ guard probe ran/);
+  assert.doesNotMatch(output, /ok \d+ - guard probe ran/);
 });
 
 test("a run without --test-global-setup or --env-file is still refused (guardEnv.ts on import)", () => {
