@@ -145,6 +145,9 @@ resolution of `tsc`/`tsx`/`ts-node`:
   (`scripts/simulate-devices.ts`) is **dev only**: it publishes synthetic, correctly signed readings to the
   MQTT broker as if it were ESP32 units, so the multi-pond UI can be tested before hardware is installed. Never
   point it at a production broker.
+- `npm run purge:parameters -- --parameter <id> [--parameter ...] [--apply]` (`scripts/purge-parameters.ts`)
+  deletes the stored readings, hourly summaries, and alerts (plus their notifications) of a parameter that has
+  been removed from `PARAMETER_BOUNDS`. Dry run unless `--apply`; refuses live parameter ids.
 - `npm run seed:admin` (`scripts/seed-admin.ts`) bootstraps the first admin the same way. It is
   idempotent: an existing profile just gets promoted.
 - Inviting real users requires **custom SMTP** in Supabase. The built-in mailer is heavily rate-limited.
@@ -239,8 +242,8 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
 - `Reading`: **narrow table**, one row per parameter per sample (`parameter` is a string id).
   - Adding a sensor parameter needs no migration: add it to `PARAMETER_BOUNDS` in `src/lib/parameters.ts`
     (physical sanity limits for rejecting garbage), to `PARAMETER_DISPLAY` in the same file
-    (label/unit/precision for the `.xlsx` export), to **every** profile in `PARAMETER_THRESHOLDS` (alert
-    ranges), and to `PARAMETERS` in the frontend (label/unit/precision only — it holds no ranges).
+    (label/unit/precision for the `.xlsx` export), to `SHARED` in the same file (alert ranges — or to each
+    profile in `PARAMETER_THRESHOLDS` if its range depends on pond type), and to `PARAMETERS` in the frontend (label/unit/precision only — it holds no ranges).
   - `pondId` is copied at ingest time, so readings stay with the pond they were measured in after a device
     is reassigned.
   - `@@unique([deviceId, parameter, recordedAt])` + `createMany({ skipDuplicates: true })` makes device
@@ -255,10 +258,11 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
     can hold QoS 1 readings while the backend restarts. `MQTT_CLIENT_ID` must be unique per running backend process.
 - **Thresholds depend on the pond's type, and the backend owns them.** `PARAMETER_THRESHOLDS` in
   `src/lib/parameters.ts` is keyed by `FRESHWATER` / `BRACKISH` / `SALTWATER` / `UNSET` (for a pond whose
-  `pondType` is still null), because a single global salinity range made every freshwater pond permanently
-  `CRITICAL` — fresh water sits near 0 ppt, under the brackish `criticalMin` of 5, so the first reading opened
-  an alert that could never resolve and notified every user. Resolve with `thresholdsFor(pondType)` and judge
-  with `severityFor(parameter, value, pondType)`.
+  `pondType` is still null), because a single global salinity range once made every freshwater pond
+  permanently `CRITICAL`. Salinity (and dissolved oxygen) have since been removed — temperature is the only
+  parameter, with turbidity next — so every profile currently points at the same `SHARED` table; a parameter
+  whose safe range does depend on pond type overrides it per profile. Resolve with `thresholdsFor(pondType)`
+  and judge with `severityFor(parameter, value, pondType)`.
   - **The frontend keeps no copy.** `GET /ponds` and `GET /ponds/:id` return a resolved `thresholds` map on
     each pond, next to `latest`, so the board colors a reading with the same numbers that raised its alert.
     `GET /notifications` likewise computes each row's `direction` (`"low"`/`"high"`) server-side. The one

@@ -19,7 +19,7 @@ const SEVERITY_RANK: Record<AlertSeverity, number> = { WARNING: 1, CRITICAL: 2 }
 
 // Re-evaluates one pond parameter's alert against its newest stored reading — not the incoming batch, so a
 // buffered backlog of older samples can never open or resolve an alert out of order. `pondType` decides which
-// threshold set applies (fresh water is nominal at 0 ppt, brackish is not).
+// threshold set applies.
 async function evaluateParameter(pondId: string, parameter: ParameterId, pondType: string | null) {
   await prisma.$transaction(async (tx) => {
     // MQTT messages are handled concurrently; two of them must not both see "no open alert" and open one each.
