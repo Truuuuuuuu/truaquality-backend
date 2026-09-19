@@ -16,6 +16,14 @@ const OPENSSL_CHECK = `printf '%s\\n%s' "$topic" "$body" | openssl dgst -sha256 
 
 // Bodies are built from object literals in firmware key order (firmwareVersion, samples[{recordedAt, values}]),
 // with binary-exact floats and whole-second "Z" timestamps (never toISOString, which emits ".000Z").
+//
+// A numeric value must also be one the firmware can reproduce: at most 6 significant decimal digits, and either
+// 0 or within [1e-5, 1e7). ArduinoJson serializes a float with 6 decimal places (its TextFormatter dispatches on
+// the storage width) and switches to exponent notation outside that range, while Node's JSON.stringify prints
+// the shortest decimal that round-trips the double. A value outside the intersection makes the native firmware
+// suite fail on a one-digit difference deep inside a 200-character body — which reads like a signing bug and is
+// not one. assertFirmwareRepresentable() below enforces the rule so it can't be forgotten; realistic
+// temperature and turbidity readings at 1-2 decimal places comply comfortably.
 const inputs = [
   {
     name: "single-temperature-sample",
@@ -49,6 +57,57 @@ const inputs = [
     },
   },
 ];
+
+const MAX_SIGNIFICANT_DIGITS = 6;
+const MIN_ABS = 1e-5;
+const MAX_ABS = 1e7;
+
+function refuse(vectorName: string, path: string, value: number, wouldEmit: string): never {
+  console.error(
+    `Vector "${vectorName}": ${path} = ${value} is not reproducible by the firmware's float serializer — ArduinoJson would emit ${wouldEmit} there, so the unit would sign different bytes than this fixture records.`,
+  );
+  console.error(
+    `A golden-vector number must have at most ${MAX_SIGNIFICANT_DIGITS} significant decimal digits and be either 0 or within [${MIN_ABS}, ${MAX_ABS}). Nothing was written.`,
+  );
+  process.exit(1);
+}
+
+// Recurses rather than reading known parameter names, so a parameter added later (turbidity) is covered without
+// touching this function.
+function checkValues(vectorName: string, values: unknown, path: string): void {
+  if (values === null || typeof values !== "object") {
+    return;
+  }
+  for (const [key, value] of Object.entries(values as Record<string, unknown>)) {
+    const keyPath = `${path}.${key}`;
+    if (typeof value === "object") {
+      checkValues(vectorName, value, keyPath);
+      continue;
+    }
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      continue;
+    }
+    const rounded = Number(value.toPrecision(MAX_SIGNIFICANT_DIGITS));
+    if (rounded !== value) {
+      refuse(vectorName, keyPath, value, `roughly ${rounded} (it keeps about ${MAX_SIGNIFICANT_DIGITS} significant digits)`);
+    }
+    const magnitude = Math.abs(value);
+    if (magnitude !== 0 && (magnitude < MIN_ABS || magnitude >= MAX_ABS)) {
+      refuse(vectorName, keyPath, value, `exponent notation (${value.toExponential()})`);
+    }
+  }
+}
+
+function assertFirmwareRepresentable(input: (typeof inputs)[number]): void {
+  for (const sample of input.body.samples) {
+    checkValues(input.name, sample.values, "values");
+  }
+}
+
+// Refuse before anything is signed or written: a vector must never be "fixed" later by loosening the firmware.
+for (const input of inputs) {
+  assertFirmwareRepresentable(input);
+}
 
 const vectors = inputs.map(({ name, secret, deviceId, body: bodyObject }) => {
   const topic = readingsTopic(deviceId);
