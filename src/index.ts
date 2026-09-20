@@ -3,7 +3,7 @@ import cors from "cors";
 import express, { type ErrorRequestHandler } from "express";
 import helmet from "helmet";
 import { prisma } from "./lib/prisma.ts";
-import { healthCheckRateLimit } from "./middleware/loginRateLimit.ts";
+import { apiRateLimit, healthCheckRateLimit, healthRateLimit } from "./middleware/loginRateLimit.ts";
 import { adminRouter } from "./routes/admin.ts";
 import { authRouter } from "./routes/auth.ts";
 import { meRouter } from "./routes/me.ts";
@@ -49,7 +49,7 @@ app.use(
 // underneath us. Nothing this API accepts comes close to it.
 app.use(express.json({ limit: "100kb" }));
 
-app.get("/health", (_req, res) => {
+app.get("/health", healthRateLimit, (_req, res) => {
   res.json({ status: "ok" });
 });
 
@@ -64,6 +64,9 @@ app.get("/health/db", healthCheckRateLimit, async (_req, res) => {
     res.status(500).json({ status: "error" });
   }
 });
+
+// After the health checks so they keep their own buckets and aren't double-counted here.
+app.use(apiRateLimit);
 
 app.use("/auth", authRouter);
 app.use("/admin", adminRouter);

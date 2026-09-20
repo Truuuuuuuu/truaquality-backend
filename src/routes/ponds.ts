@@ -7,6 +7,7 @@ import { prisma } from "../lib/prisma.ts";
 import { rawRetentionDays } from "../lib/readingRollup.ts";
 import { streamReadingsExport, validateExportRange } from "../lib/readingsExport.ts";
 import { decodeReadingsCursor, encodeReadingsCursor, type ReadingsCursor } from "../lib/readingsCursor.ts";
+import { readingsExportRateLimit } from "../middleware/loginRateLimit.ts";
 import { requireAuth } from "../middleware/requireAuth.ts";
 import { validate } from "../middleware/validate.ts";
 import { pondIdParams, readingsExportQuery, readingsPageQuery, seriesQuery } from "../schemas/ponds.ts";
@@ -225,6 +226,7 @@ pondsRouter.get(
 // from routing/validation concerns.
 pondsRouter.get(
   "/:id/readings/export",
+  readingsExportRateLimit,
   validate(pondIdParams, "params"),
   validate(readingsExportQuery, "query"),
   async (req, res) => {

@@ -4,6 +4,7 @@ import { logAudit } from "../lib/audit.ts";
 import { deviceCredentials } from "../lib/deviceSecrets.ts";
 import { deviceSummarySelect } from "../lib/devices.ts";
 import { prisma } from "../lib/prisma.ts";
+import { rotateSecretRateLimit } from "../middleware/loginRateLimit.ts";
 import { validate } from "../middleware/validate.ts";
 import { createDeviceSchema, deviceIdParams, updateDeviceSchema } from "../schemas/devices.ts";
 
@@ -101,7 +102,7 @@ adminDevicesRouter.patch(
   },
 );
 
-adminDevicesRouter.post("/:id/rotate-secret", validate(deviceIdParams, "params"), async (req, res) => {
+adminDevicesRouter.post("/:id/rotate-secret", rotateSecretRateLimit, validate(deviceIdParams, "params"), async (req, res) => {
   const { id } = req.params as z.infer<typeof deviceIdParams>;
   const actorId = req.profile!.id;
 
