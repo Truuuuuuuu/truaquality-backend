@@ -30,7 +30,7 @@ const inputs = [
     secret: "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
     deviceId: "00000000-0000-4000-8000-000000000001",
     body: {
-      firmwareVersion: "0.3.0",
+      firmwareVersion: "0.4.0",
       samples: [{ recordedAt: "2023-11-14T22:13:20Z", values: { temperature: 27.5 } }],
     },
   },
@@ -39,7 +39,7 @@ const inputs = [
     secret: "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
     deviceId: "00000000-0000-4000-8000-000000000001",
     body: {
-      firmwareVersion: "0.3.0",
+      firmwareVersion: "0.4.0",
       samples: [
         { recordedAt: "2023-11-14T22:13:20Z", values: { temperature: 27.5 } },
         { recordedAt: "2023-11-14T22:14:20Z", values: { temperature: 26.25 } },
@@ -52,8 +52,48 @@ const inputs = [
     secret: "golden-secret-not-real-BBBBBBBBBBBBBBBBBBBB",
     deviceId: "00000000-0000-4000-8000-000000000002",
     body: {
-      firmwareVersion: "0.3.0",
+      firmwareVersion: "0.4.0",
       samples: [{ recordedAt: "2023-11-14T22:13:20Z", values: { temperature: 26.25 } }],
+    },
+  },
+  // The three turbidity vectors below pin *bytes*, not the backend's acceptance of them. Until Phase 4 adds
+  // turbidity to PARAMETER_BOUNDS, ingest rejects it as an unknown parameter per value while still storing
+  // the temperature alongside it — so a unit publishing these bodies today is correct on the wire and half
+  // dropped at the far end, on purpose. `temperature` is written before `turbidity` in every values object
+  // because object-literal order is JSON key order and JSON key order is signed bytes; wire::buildBody emits
+  // its addValue calls in the same order.
+  {
+    name: "temperature-and-turbidity",
+    secret: "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
+    deviceId: "00000000-0000-4000-8000-000000000001",
+    body: {
+      firmwareVersion: "0.4.0",
+      samples: [{ recordedAt: "2023-11-14T22:13:20Z", values: { temperature: 27.5, turbidity: 12.3 } }],
+    },
+  },
+  {
+    // The shape a unit publishes when the DS18B20 is unplugged but turbidity is calibrated: a NAN has no JSON
+    // form, so the temperature key is simply absent rather than null or 0.
+    name: "turbidity-only-sample",
+    secret: "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
+    deviceId: "00000000-0000-4000-8000-000000000001",
+    body: {
+      firmwareVersion: "0.4.0",
+      samples: [{ recordedAt: "2023-11-14T22:13:20Z", values: { turbidity: 250.5 } }],
+    },
+  },
+  {
+    // The case SENS-03/SENS-04 turn on: a faulted or uncalibrated turbidity sensor drops out of one sample
+    // while temperature keeps reporting in the same batch (D-04). "Omitted" IS the temperature-only body.
+    name: "turbidity-nan-omitted-in-batch",
+    secret: "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
+    deviceId: "00000000-0000-4000-8000-000000000001",
+    body: {
+      firmwareVersion: "0.4.0",
+      samples: [
+        { recordedAt: "2023-11-14T22:13:20Z", values: { temperature: 27.5, turbidity: 12.3 } },
+        { recordedAt: "2023-11-14T22:14:20Z", values: { temperature: 26.25 } },
+      ],
     },
   },
 ];
