@@ -23,7 +23,11 @@ export async function ingestSamples(
   // Recorded even for an unassigned device, so admins can see a freshly installed unit is online.
   await prisma.device.update({
     where: { id: device.id },
-    data: { lastSeenAt: receivedAt, ...(message.firmwareVersion ? { firmwareVersion: message.firmwareVersion } : {}) },
+    data: {
+      lastSeenAt: receivedAt,
+      ...(message.firmwareVersion ? { firmwareVersion: message.firmwareVersion } : {}),
+      ...(message.wifiSsid ? { wifiSsid: message.wifiSsid } : {}),
+    },
   });
 
   if (!device.pondId) {

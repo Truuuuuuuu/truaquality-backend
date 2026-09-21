@@ -109,6 +109,9 @@ model Device {
   // message can't be replayed into the pond the device was moved to.
   assignedAt      DateTime?
   firmwareVersion String?
+  // Last WiFi network the unit reported connecting through (firmware >= 0.5.0). Informational only, not
+  // authoritative: null until such a unit reports, and left unchanged when a message omits it.
+  wifiSsid        String?
   lastSeenAt      DateTime?
   // Set by the watchdog job (lib/deviceWatchdog.ts) the first cycle it finds lastSeenAt stale; cleared the
   // cycle lastSeenAt looks recent again. Null means "not currently flagged offline" — the offline-episode

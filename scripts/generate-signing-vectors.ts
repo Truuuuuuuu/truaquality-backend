@@ -14,7 +14,7 @@ import { readingsTopic, signMessage } from "../src/lib/deviceMessages.ts";
 
 const OPENSSL_CHECK = `printf '%s\\n%s' "$topic" "$body" | openssl dgst -sha256 -hmac "$secret"`;
 
-// Bodies are built from object literals in firmware key order (firmwareVersion, samples[{recordedAt, values}]),
+// Bodies are built from object literals in firmware key order (firmwareVersion, wifiSsid, samples[{recordedAt, values}]),
 // with binary-exact floats and whole-second "Z" timestamps (never toISOString, which emits ".000Z").
 //
 // A numeric value must also be one the firmware can reproduce: at most 6 significant decimal digits, and either
@@ -30,7 +30,7 @@ const inputs = [
     secret: "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
     deviceId: "00000000-0000-4000-8000-000000000001",
     body: {
-      firmwareVersion: "0.4.0",
+      firmwareVersion: "0.5.0",
       samples: [{ recordedAt: "2023-11-14T22:13:20Z", values: { temperature: 27.5 } }],
     },
   },
@@ -39,7 +39,7 @@ const inputs = [
     secret: "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
     deviceId: "00000000-0000-4000-8000-000000000001",
     body: {
-      firmwareVersion: "0.4.0",
+      firmwareVersion: "0.5.0",
       samples: [
         { recordedAt: "2023-11-14T22:13:20Z", values: { temperature: 27.5 } },
         { recordedAt: "2023-11-14T22:14:20Z", values: { temperature: 26.25 } },
@@ -52,7 +52,7 @@ const inputs = [
     secret: "golden-secret-not-real-BBBBBBBBBBBBBBBBBBBB",
     deviceId: "00000000-0000-4000-8000-000000000002",
     body: {
-      firmwareVersion: "0.4.0",
+      firmwareVersion: "0.5.0",
       samples: [{ recordedAt: "2023-11-14T22:13:20Z", values: { temperature: 26.25 } }],
     },
   },
@@ -67,7 +67,7 @@ const inputs = [
     secret: "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
     deviceId: "00000000-0000-4000-8000-000000000001",
     body: {
-      firmwareVersion: "0.4.0",
+      firmwareVersion: "0.5.0",
       samples: [{ recordedAt: "2023-11-14T22:13:20Z", values: { temperature: 27.5, turbidity: 12.3 } }],
     },
   },
@@ -78,7 +78,7 @@ const inputs = [
     secret: "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
     deviceId: "00000000-0000-4000-8000-000000000001",
     body: {
-      firmwareVersion: "0.4.0",
+      firmwareVersion: "0.5.0",
       samples: [{ recordedAt: "2023-11-14T22:13:20Z", values: { turbidity: 250.5 } }],
     },
   },
@@ -89,11 +89,24 @@ const inputs = [
     secret: "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
     deviceId: "00000000-0000-4000-8000-000000000001",
     body: {
-      firmwareVersion: "0.4.0",
+      firmwareVersion: "0.5.0",
       samples: [
         { recordedAt: "2023-11-14T22:13:20Z", values: { temperature: 27.5, turbidity: 12.3 } },
         { recordedAt: "2023-11-14T22:14:20Z", values: { temperature: 26.25 } },
       ],
+    },
+  },
+  {
+    // wifiSsid sits between firmwareVersion and samples (key order is signed bytes). The SSID is chosen to hit
+    // every escaping path: a double quote and a backslash (both escaped by ArduinoJson and JSON.stringify) and
+    // a non-ASCII character (left raw as UTF-8 by both).
+    name: "wifi-ssid-awkward",
+    secret: "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
+    deviceId: "00000000-0000-4000-8000-000000000001",
+    body: {
+      firmwareVersion: "0.5.0",
+      wifiSsid: 'Bahay "Kubo" \\ Café',
+      samples: [{ recordedAt: "2023-11-14T22:13:20Z", values: { temperature: 27.5 } }],
     },
   },
 ];

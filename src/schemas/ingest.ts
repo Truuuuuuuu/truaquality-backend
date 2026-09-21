@@ -19,6 +19,9 @@ const sampleSchema = z.object({
 
 export const ingestSchema = z.object({
   firmwareVersion: z.string().trim().max(32).optional(),
+  // Network name the unit is connected to, sent per message (never per sample). 32 is the 802.11 SSID byte
+  // limit; older firmware omits it, which leaves the stored value untouched.
+  wifiSsid: z.string().trim().max(32).optional(),
   // Batched so a device can flush readings it buffered while offline.
   samples: z.array(sampleSchema).min(1).max(120),
 });

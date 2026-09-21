@@ -219,6 +219,8 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
   - Each message is `v1.<hex HMAC-SHA256>.<JSON body>`, with the HMAC over `<topic>\n<body>`
     (`src/lib/deviceMessages.ts`). The firmware (`firmware/lib/Uplink`) and the simulator must match it
     exactly.
+  - The body is `{firmwareVersion, wifiSsid?, samples}`; key order is signed bytes. `wifiSsid` is per message,
+    optional (firmware < 0.5.0 omits it), and stored on `Device.wifiSsid` only when non-empty.
   - **Secrets are derived, not stored** (`src/lib/deviceSecrets.ts`): HMAC(`DEVICE_SECRET_MASTER_KEY`,
     `device-secret:<id>:<secretVersion>`).
     - Rotating a device bumps `secretVersion`.

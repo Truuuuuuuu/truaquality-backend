@@ -425,6 +425,7 @@ test("end-to-end: 28, 25, 23, then 11 minutes of 28 -> one episode opened, escal
     pondId: "pond-1",
     assignedAt: at(-DAY),
     firmwareVersion: null,
+    wifiSsid: null,
     lastSeenAt: null,
     offlineSince: null,
     createdAt: at(-2 * DAY),

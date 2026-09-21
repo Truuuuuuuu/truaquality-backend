@@ -33,12 +33,12 @@ function flipHexDigit(hex: string, index: number) {
 }
 
 // The count and the pinned signature move together with the fixture, and only ever by regenerating it:
-// vectors 3-5 carry turbidity and every signature changed when firmwareVersion went to 0.4.0 (the version
-// string is inside the signed body). The pinned literal is what stops a half-written fixture from letting
+// vectors 3-5 carry turbidity, vector 6 carries an awkward wifiSsid, and every signature changed when
+// firmwareVersion went to 0.5.0 (the version string is inside the signed body). The pinned literal is what stops a half-written fixture from letting
 // every case below pass vacuously.
-test("fixture holds the six golden vectors", () => {
-  assert.equal(vectors.length, 6);
-  assert.equal(v0.signature, "77d5f7ca60b8d97368c9d59807d2a15521afa17689b4bb86f13b6d1ca3ebdefc");
+test("fixture holds the seven golden vectors", () => {
+  assert.equal(vectors.length, 7);
+  assert.equal(v0.signature, "b1a776ca532c46a3bc2538ee73d5d18aea3c0dbd85a126fdc682bc648b3c4a80");
   for (const v of vectors) assert.match(v.secret, /not-real/);
 });
 

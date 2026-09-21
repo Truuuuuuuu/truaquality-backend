@@ -62,6 +62,7 @@ async function report(unit: (typeof units)[number]) {
   const topic = readingsTopic(unit.deviceId);
   const body = JSON.stringify({
     firmwareVersion: "simulator",
+    wifiSsid: "Simulated-WiFi",
     samples: [{ recordedAt: new Date().toISOString(), values: sampleValues }],
   });
   await client.publishAsync(topic, signMessage(unit.secret, topic, body), { qos: 1 });

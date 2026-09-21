@@ -11,6 +11,7 @@ export const deviceSummarySelect = {
   pondId: true,
   assignedAt: true,
   firmwareVersion: true,
+  wifiSsid: true,
   lastSeenAt: true,
   createdAt: true,
   updatedAt: true,

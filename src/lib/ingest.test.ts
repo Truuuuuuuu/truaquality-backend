@@ -29,6 +29,7 @@ function device(overrides: Partial<Device> = {}): Device {
     pondId: "pond-1",
     assignedAt: at(-DAY),
     firmwareVersion: null,
+    wifiSsid: null,
     lastSeenAt: null,
     offlineSince: null,
     createdAt: at(-2 * DAY),
@@ -185,6 +186,36 @@ test("firmwareVersion absent or empty is not written to the device", async (t) =
     assert.equal(Object.hasOwn(update.data, "firmwareVersion"), false);
     assert.ok(update.data.lastSeenAt instanceof Date);
   }
+});
+
+test("wifiSsid is written to the device when present", async (t) => {
+  const fake = createPrismaFake();
+  fake.install(t);
+
+  await ingestSamples(
+    device(),
+    { wifiSsid: "Fish Farm", samples: [{ recordedAt: minute(0), values: { temperature: 28 } }] },
+    minute(0),
+  );
+
+  const [update] = argsOf(fake, "device.update");
+  assert.equal(update.data.wifiSsid, "Fish Farm");
+});
+
+test("wifiSsid absent or empty is not written to the device", async (t) => {
+  const fake = createPrismaFake();
+  fake.install(t);
+
+  await ingestSamples(device(), { samples: [{ recordedAt: minute(0), values: { temperature: 28 } }] }, minute(0));
+  await ingestSamples(
+    device(),
+    { wifiSsid: "", samples: [{ recordedAt: minute(1), values: { temperature: 28 } }] },
+    minute(1),
+  );
+
+  const updates = argsOf(fake, "device.update");
+  assert.equal(updates.length, 2);
+  for (const update of updates) assert.equal(Object.hasOwn(update.data, "wifiSsid"), false);
 });
 
 test("mixed-rejection batch: reasons pinned in sample order, only accepted rows reach createMany", async (t) => {

@@ -25,6 +25,18 @@ describe("ingestSchema", () => {
     });
   });
 
+  describe("wifiSsid", () => {
+    test("is optional and trimmed", () => {
+      assert.equal(ingestSchema.safeParse({ samples: [sample] }).success, true);
+      const parsed = ingestSchema.parse({ wifiSsid: "  Fish Farm  ", samples: [sample] });
+      assert.equal(parsed.wifiSsid, "Fish Farm");
+    });
+    test("is capped at 32 characters", () => {
+      assert.equal(ingestSchema.safeParse({ wifiSsid: "x".repeat(32), samples: [sample] }).success, true);
+      assert.equal(ingestSchema.safeParse({ wifiSsid: "x".repeat(33), samples: [sample] }).success, false);
+    });
+  });
+
   describe("firmwareVersion", () => {
     test("is trimmed", () => {
       const parsed = ingestSchema.parse({ firmwareVersion: "  0.3.0  ", samples: [sample] });
