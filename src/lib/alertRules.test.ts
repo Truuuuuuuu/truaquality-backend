@@ -8,8 +8,9 @@ import {
   renotifyDue,
   type OpenEpisode,
 } from "./alertRules.ts";
+import { PARAMETER_BOUNDS, thresholdsFor } from "./parameters.ts";
 
-// Characterization of today's (temperature-only) alert episode state machine. Pure: no DB, no env, no wall
+// Characterization of today's alert episode state machine (temperature, plus table-derived turbidity cases). Pure: no DB, no env, no wall
 // clock. Temperature bands: safe 26-31, critical 24-33 (strict < / > on both edges).
 const T = new Date("2030-01-01T00:00:00Z");
 const MIN_MS = 60 * 1000;
@@ -182,6 +183,78 @@ describe("decideAlertStep — pond type", () => {
       const baseline = decideAlertStep("temperature", null, open, { value, recordedAt });
       for (const pondType of pondTypes) {
         assert.deepEqual(decideAlertStep("temperature", pondType, open, { value, recordedAt }), baseline);
+      }
+    });
+  }
+});
+
+describe("decideAlertStep — turbidity (table-derived, criticalMax PENDING BFAR)", () => {
+  // Every turbidity value is derived from the threshold table, never a literal critical number (D-03), so
+  // swapping in BFAR's real critical line needs no test edits.
+  const TB = thresholdsFor(null).turbidity;
+  const NOMINAL = 0;
+  const WARNING = TB.safeMax + (TB.criticalMax - TB.safeMax) / 2;
+  const CRITICAL = TB.criticalMax + 1;
+
+  const turbStep = (
+    open: OpenEpisode | null,
+    value: number,
+    recordedAt: Date = at(MIN_MS),
+    pondType: string | null = null,
+  ) => decideAlertStep("turbidity", pondType, open, { value, recordedAt });
+
+  test("CRITICAL test value is still a physically valid reading", () => {
+    assert.ok(CRITICAL <= PARAMETER_BOUNDS.turbidity.max);
+  });
+
+  test("clear water (0 NTU) with no open episode does nothing", () => {
+    assert.deepEqual(turbStep(null, NOMINAL), { kind: "none" });
+  });
+
+  test("warning-range turbidity opens a WARNING episode", () => {
+    assert.deepEqual(turbStep(null, WARNING), { kind: "open", severity: "WARNING" });
+  });
+
+  test("critical-range turbidity opens a CRITICAL episode", () => {
+    assert.deepEqual(turbStep(null, CRITICAL), { kind: "open", severity: "CRITICAL" });
+  });
+
+  test("WARNING episode, warning -> critical: escalated and worsened", () => {
+    assert.deepEqual(turbStep(episode({ severity: "WARNING", lastValue: WARNING }), CRITICAL), {
+      kind: "abnormal",
+      severity: "CRITICAL",
+      escalated: true,
+      worsened: true,
+    });
+  });
+
+  test("clear water starts the recovery clock on an open episode", () => {
+    const recordedAt = at(MIN_MS);
+    assert.deepEqual(turbStep(episode({ lastValue: WARNING, nominalSince: null }), NOMINAL, recordedAt), {
+      kind: "nominal",
+      nominalSince: recordedAt,
+      resolved: false,
+    });
+  });
+
+  test("clear water for ALERT_RECOVERY_MS resolves the episode (ALRT-03)", () => {
+    const t0 = at(MIN_MS);
+    assert.deepEqual(
+      turbStep(episode({ lastValue: NOMINAL, nominalSince: t0 }), NOMINAL, new Date(t0.getTime() + ALERT_RECOVERY_MS)),
+      { kind: "nominal", nominalSince: t0, resolved: true },
+    );
+  });
+
+  // D-05: turbidity is SHARED, so the pond's type must not change any decision.
+  for (const [name, value] of [
+    ["NOMINAL", NOMINAL],
+    ["WARNING", WARNING],
+    ["CRITICAL", CRITICAL],
+  ] as const) {
+    test(`${name}: identical step for every pond type`, () => {
+      const baseline = turbStep(null, value);
+      for (const pondType of [null, "FRESHWATER", "BRACKISH", "SALTWATER", "LAKE"]) {
+        assert.deepEqual(turbStep(null, value, at(MIN_MS), pondType), baseline);
       }
     });
   }

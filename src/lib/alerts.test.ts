@@ -4,10 +4,12 @@ import type { Device } from "../generated/prisma/client.ts";
 import { createPrismaFake, type FakeAlert, type PrismaFakeOptions } from "../testing/prismaFake.ts";
 import { evaluatePondAlerts } from "./alerts.ts";
 import { ingestSamples } from "./ingest.ts";
+import { thresholdsFor, type ParameterId } from "./parameters.ts";
 
 // Shell-trace characterization of evaluatePondAlerts (and, in Part B, the full ingest -> alerts -> notify
 // path) against the in-memory Prisma fake (TEST-01). Written against the UNMODIFIED alerts.ts before the pure
-// core is extracted. Temperature thresholds (all profiles SHARED): safe 26..31, critical 24..33.
+// core is extracted. Temperature thresholds (all profiles SHARED): safe 26..31, critical 24..33. Turbidity
+// cases use values derived from thresholdsFor(null).turbidity, never a literal critical number.
 // Every timestamp derives from T0 — never the wall clock.
 
 const T0 = new Date("2030-01-01T00:00:00Z");
@@ -26,8 +28,8 @@ function setup(t: TestContext, opts: PrismaFakeOptions = {}) {
   return fake;
 }
 
-function seedReading(fake: Fake, value: number, recordedAt: Date) {
-  fake.readings.push({ pondId: "pond-1", deviceId: DEVICE_ID, parameter: "temperature", value, recordedAt });
+function seedReading(fake: Fake, value: number, recordedAt: Date, parameter = "temperature") {
+  fake.readings.push({ pondId: "pond-1", deviceId: DEVICE_ID, parameter, value, recordedAt });
 }
 
 function seedAlert(fake: Fake, overrides: Partial<FakeAlert>): FakeAlert {
@@ -51,7 +53,7 @@ function seedNotification(fake: Fake, alertId: string, recordedAt: Date) {
   fake.notifications.push({ profileId: "p1", alertId, kind: "ALERT_OPENED", severity: "WARNING", value: 25, recordedAt });
 }
 
-const evaluate = () => evaluatePondAlerts("pond-1", ["temperature"]);
+const evaluate = (parameters: ParameterId[] = ["temperature"]) => evaluatePondAlerts("pond-1", parameters);
 
 const argsOf = (fake: Fake, op: string) =>
   fake.calls.filter((c) => c.op === op).map((c) => c.args as { data: Record<string, unknown> });
@@ -462,4 +464,75 @@ test("end-to-end: 28, 25, 23, then 11 minutes of 28 -> one episode opened, escal
     ],
   );
   assert.equal(fake.ops().filter((op) => op === "pond.findUnique").length, values.length);
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// Turbidity — table-derived values (criticalMax is PENDING BFAR)
+// ---------------------------------------------------------------------------------------------------------
+
+const TB = thresholdsFor(null).turbidity;
+const NTU_NOMINAL = 0;
+const NTU_WARNING = TB.safeMax + (TB.criticalMax - TB.safeMax) / 2;
+const NTU_CRITICAL = TB.criticalMax + 1;
+
+test("turbidity: clear water (0 NTU) opens nothing and notifies nobody", async (t) => {
+  const fake = setup(t);
+  seedReading(fake, NTU_NOMINAL, minute(0), "turbidity");
+
+  await evaluate(["turbidity"]);
+
+  assert.deepEqual(fake.ops(), PREFIX);
+  assert.equal(fake.alerts.length, 0);
+  assert.equal(fake.notifications.length, 0);
+});
+
+test("end-to-end turbidity: nominal, warning, critical, then 11 minutes of 0 NTU -> opened, escalated, resolved", async (t) => {
+  const fake = setup(t);
+  const device = {
+    id: DEVICE_ID,
+    serial: "SIM-0001",
+    hardwareModel: null,
+    label: null,
+    secretVersion: 1,
+    status: "ACTIVE",
+    pondId: "pond-1",
+    assignedAt: at(-DAY),
+    firmwareVersion: null,
+    wifiSsid: null,
+    lastSeenAt: null,
+    offlineSince: null,
+    createdAt: at(-2 * DAY),
+    updatedAt: at(-2 * DAY),
+  } as Device;
+
+  const values = [NTU_NOMINAL, NTU_WARNING, NTU_CRITICAL, ...Array.from({ length: 11 }, () => NTU_NOMINAL)];
+  for (const [n, value] of values.entries()) {
+    const result = await ingestSamples(
+      device,
+      { firmwareVersion: "simulator", samples: [{ recordedAt: minute(n), values: { turbidity: value } }] },
+      minute(n),
+    );
+    assert.deepEqual(result, { status: "stored", accepted: 1, duplicates: 0, rejected: [] });
+  }
+
+  assert.equal(fake.alerts.length, 1);
+  const [episode] = fake.alerts;
+  assert.equal(episode.parameter, "turbidity");
+  assert.equal(episode.severity, "CRITICAL");
+  assert.deepEqual(episode.openedAt, minute(1));
+  assert.deepEqual(episode.nominalSince, minute(3));
+  assert.deepEqual(episode.resolvedAt, minute(13));
+
+  assert.deepEqual(
+    fake.notifications.map((n) => n.kind),
+    ["ALERT_OPENED", "ALERT_ESCALATED", "ALERT_RESOLVED"],
+  );
+  assert.deepEqual(
+    fake.notifications.map((n) => [n.severity, n.value, n.recordedAt, n.alertId]),
+    [
+      ["WARNING", NTU_WARNING, minute(1), "alert-1"],
+      ["CRITICAL", NTU_CRITICAL, minute(2), "alert-1"],
+      ["CRITICAL", NTU_NOMINAL, minute(13), "alert-1"],
+    ],
+  );
 });
