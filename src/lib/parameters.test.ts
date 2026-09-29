@@ -152,7 +152,30 @@ describe("turbidity (NTU) — BFAR safeMax 25, criticalMax PENDING BFAR", () => 
   });
 
   test("display metadata is Turbidity / NTU / precision 1", () => {
-    assert.deepEqual(PARAMETER_DISPLAY.turbidity, { label: "Turbidity", unit: "NTU", precision: 1 });
+    assert.deepEqual(PARAMETER_DISPLAY.turbidity, {
+      label: "Turbidity",
+      unit: "NTU",
+      precision: 1,
+      exportHeader: "Turbidity (NTU, approx.)",
+    });
+  });
+
+  test("D-03: turbidity critical line is marked pending in every profile", () => {
+    for (const profile of PROFILES) {
+      assert.equal(PARAMETER_THRESHOLDS[profile].turbidity.criticalPending, true, `${profile}: not pending`);
+    }
+  });
+
+  test("D-03: temperature carries no criticalPending key (JSON omits it)", () => {
+    for (const profile of PROFILES) {
+      assert.equal("criticalPending" in PARAMETER_THRESHOLDS[profile].temperature, false, `${profile}`);
+    }
+  });
+
+  test("D-12: export header is Turbidity (NTU, approx.); label stays plain", () => {
+    assert.equal(PARAMETER_DISPLAY.turbidity.exportHeader, "Turbidity (NTU, approx.)");
+    assert.equal(PARAMETER_DISPLAY.temperature.exportHeader, "Temperature");
+    assert.equal(PARAMETER_DISPLAY.turbidity.label, "Turbidity");
   });
 
   test("export-format guard: every precision >= 1, turbidity format is 0.0\" NTU\"", () => {
