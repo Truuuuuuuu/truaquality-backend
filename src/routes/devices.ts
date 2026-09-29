@@ -2,6 +2,7 @@ import { Router } from "express";
 import type { z } from "zod";
 import { uptimePercent } from "../lib/deviceDiagnosticsRules.ts";
 import { deviceSummarySelect } from "../lib/devices.ts";
+import { DEVICE_OFFLINE_AFTER_MS } from "../lib/deviceWatchdog.ts";
 import { PARAMETER_IDS } from "../lib/parameters.ts";
 import { prisma } from "../lib/prisma.ts";
 import { requireAuth } from "../middleware/requireAuth.ts";
@@ -151,22 +152,28 @@ devicesRouter.get("/:id/diagnostics", validate(deviceIdParams, "params"), async 
 
   let uptime24h: number | null = null;
   if (device.lastSeenAt) {
-    const stateAtStart = eventBeforeWindow
-      ? eventBeforeWindow.kind === "OFFLINE"
+    // A unit can't have been online after it last reported plus the watchdog's grace period, whatever the
+    // event history says. DeviceEvent only exists since 0.6.0 diagnostics landed, and the watchdog doesn't
+    // run while the backend is down, so an outage that began before either would otherwise read as 100%
+    // uptime for a unit that has been silent for days.
+    const silentFrom = new Date(device.lastSeenAt.getTime() + DEVICE_OFFLINE_AFTER_MS);
+    const silentNow = silentFrom < now;
+    const stateAtStart =
+      silentNow && silentFrom <= windowStart
         ? "offline"
-        : "online"
-      : device.offlineSince && device.offlineSince <= windowStart
-        ? "offline"
-        : "online";
-    uptime24h = uptimePercent({
-      windowStart,
-      now,
-      stateAtStart,
-      transitions: windowEvents.map((event) => ({
-        kind: event.kind as "OFFLINE" | "ONLINE",
-        at: event.createdAt,
-      })),
-    });
+        : eventBeforeWindow
+          ? eventBeforeWindow.kind === "OFFLINE"
+            ? "offline"
+            : "online"
+          : device.offlineSince && device.offlineSince <= windowStart
+            ? "offline"
+            : "online";
+    const transitions = windowEvents.map((event) => ({
+      kind: event.kind as "OFFLINE" | "ONLINE",
+      at: event.createdAt,
+    }));
+    if (silentNow) transitions.push({ kind: "OFFLINE", at: silentFrom });
+    uptime24h = uptimePercent({ windowStart, now, stateAtStart, transitions });
   }
 
   res.json({

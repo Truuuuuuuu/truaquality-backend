@@ -8,7 +8,7 @@ import { prisma } from "./prisma.ts";
 
 // Keep in sync with frontend/src/lib/parameters.ts STALE_AFTER_MS — that's what the dashboard already calls
 // "Offline" for a pond's device, and this is what turns the same threshold into a real notification.
-const DEVICE_OFFLINE_AFTER_MS = 5 * 60 * 1000;
+export const DEVICE_OFFLINE_AFTER_MS = 5 * 60 * 1000;
 
 // One fixed key identifying "the device watchdog job" for pg_try_advisory_xact_lock, so two backend
 // instances never race the same offline/recovery transition for a device.
