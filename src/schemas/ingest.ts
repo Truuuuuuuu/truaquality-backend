@@ -61,8 +61,9 @@ const diagSchema = z.object({
 });
 
 // The approved design said z.record(parameterId, statusEnum), but Zod 4's z.record with an enum key is
-// exhaustive (every key required), and PARAMETER_BOUNDS doesn't list turbidity yet even though 0.6.0 firmware
-// reports it. So the key is a bounded id string instead: one unknown or extra sensor must never reject the whole
+// exhaustive (every key required). Turbidity is now in PARAMETER_BOUNDS, but the key stays a bounded id string
+// rather than z.enum(PARAMETER_IDS): older firmware omits sensors newer ones report, and a future sensor may be
+// reported before it is a known parameter. One unknown, extra, or missing sensor must never reject the whole
 // signed message, because its readings would be lost with it.
 const sensorsSchema = z
   .record(z.string().regex(/^[a-z][a-zA-Z0-9]{0,31}$/), z.enum(SENSOR_STATUSES))

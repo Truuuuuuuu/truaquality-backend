@@ -23,8 +23,8 @@ Current surface area:
 - `GET /devices/:id/diagnostics` (protected, any role): maintenance view of one unit —
   `{ health: {rssi, uptimeS, resetReason, freeHeap, queuedSamples, diagnosticsAt, offlineSince}, sensors: [{parameter,
   lastReadingAt, lastValue, readings24h, longestGapMin24h, reportedStatus}], uptime24h, events }`. `sensors` lists
-  every `PARAMETER_IDS` entry plus any extra key the unit reports in `sensorStatus` (e.g. turbidity before its bounds
-  land). Latest value per parameter is a `CROSS JOIN LATERAL ... LIMIT 1` on the `(deviceId, parameter, recordedAt)`
+  every `PARAMETER_IDS` entry plus any extra key the unit reports in `sensorStatus` (e.g. a sensor newer firmware
+  reports before the backend knows it). Latest value per parameter is a `CROSS JOIN LATERAL ... LIMIT 1` on the `(deviceId, parameter, recordedAt)`
   unique index (never `DISTINCT ON`); 24 h completeness is one `lag()` query; `uptime24h` (null until the unit has
   ever reported) comes from `uptimePercent` in the pure `src/lib/deviceDiagnosticsRules.ts` over the unit's
   OFFLINE/ONLINE `DeviceEvent`s; `events` is the latest 50.
@@ -180,12 +180,14 @@ resolution of `tsc`/`tsx`/`ts-node`:
   3. If the DB write fails, delete the Supabase user so no orphaned login remains.
   The invite link lands on `INVITE_REDIRECT_URL` (a frontend page where the user sets a password). That URL
   must be in Supabase's allowed redirect URLs.
-- `npm run simulate:devices -- --device <deviceId>:<deviceSecret> [--device ...] [--interval 60]`
+- `npm run simulate:devices -- --device <deviceId>:<deviceSecret> [--device ...] [--interval 60] [--no-turbidity]`
   (`scripts/simulate-devices.ts`) is **dev only**: it publishes synthetic, correctly signed readings to the
   MQTT broker as if it were ESP32 units, so the multi-pond UI can be tested before hardware is installed. Never
   point it at a production broker. Every message carries integer `diag` and a `sensors` map like firmware 0.6.0;
   `--fault <parameter>=<status>` (repeatable, status validated against `SENSOR_STATUSES`) reports that sensor with
-  that status and omits its value, to demo a SENSOR_FAULT (restart without it to see SENSOR_RECOVERED).
+  that status and omits its value, to demo a SENSOR_FAULT (restart without it to see SENSOR_RECOVERED). Each unit
+  reports temperature then turbidity (0.1 NTU steps, drifting 0..60 NTU across the 25 NTU safe line to demo a
+  WARNING); `--no-turbidity` drops turbidity from values and `sensors`, mimicking firmware older than 0.4.0.
 - `npm run purge:parameters -- --parameter <id> [--parameter ...] [--apply]` (`scripts/purge-parameters.ts`)
   deletes the stored readings, hourly summaries, and alerts (plus their notifications) of a parameter that has
   been removed from `PARAMETER_BOUNDS`. Dry run unless `--apply`; refuses live parameter ids.
@@ -334,8 +336,9 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
 - **Thresholds depend on the pond's type, and the backend owns them.** `PARAMETER_THRESHOLDS` in
   `src/lib/parameters.ts` is keyed by `FRESHWATER` / `BRACKISH` / `SALTWATER` / `UNSET` (for a pond whose
   `pondType` is still null), because a single global salinity range once made every freshwater pond
-  permanently `CRITICAL`. Salinity (and dissolved oxygen) have since been removed — temperature is the only
-  parameter, with turbidity next — so every profile currently points at the same `SHARED` table; a parameter
+  permanently `CRITICAL`. Salinity (and dissolved oxygen) have since been removed — temperature and turbidity are
+  the parameters (turbidity added in Phase 4: safeMax 25 NTU from BFAR, criticalMax `TURBIDITY_CRITICAL_MAX_NTU`
+  pending BFAR, no low-side band) — so every profile points at the same `SHARED` table; a parameter
   whose safe range does depend on pond type overrides it per profile. Resolve with `thresholdsFor(pondType)`
   and judge with `severityFor(parameter, value, pondType)`.
   - **The frontend keeps no copy.** `GET /ponds` and `GET /ponds/:id` return a resolved `thresholds` map on

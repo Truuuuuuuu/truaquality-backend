@@ -63,7 +63,7 @@ devicesRouter.get("/:id/diagnostics", validate(deviceIdParams, "params"), async 
   const now = new Date();
   const since = new Date(now.getTime() - DAY_MS);
   const statuses = reportedStatuses(device.sensorStatus);
-  // A sensor the unit reports but that isn't a known parameter yet (turbidity, before its bounds land) is still
+  // A sensor the unit reports before it is a known parameter (e.g. new firmware ahead of the backend) is still
   // listed, so a fault on it is never hidden from the page.
   const known = new Set<string>(PARAMETER_IDS);
   const parameters = [...PARAMETER_IDS, ...Object.keys(statuses).filter((key) => !known.has(key)).sort()];

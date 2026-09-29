@@ -71,10 +71,10 @@ const inputs: VectorInput[] = [
       samples: [{ recordedAt: "2023-11-14T22:13:20Z", values: { temperature: 26.25 } }],
     },
   },
-  // The three turbidity vectors below pin *bytes*, not the backend's acceptance of them. Until Phase 4 adds
-  // turbidity to PARAMETER_BOUNDS, ingest rejects it as an unknown parameter per value while still storing
-  // the temperature alongside it — so a unit publishing these bodies today is correct on the wire and half
-  // dropped at the far end, on purpose. `temperature` is written before `turbidity` in every values object
+  // The three turbidity vectors below pin *bytes*, not the backend's acceptance of them. Turbidity is now a
+  // stored parameter (Phase 4), so ingest keeps both values; the vectors already carried it and are deliberately
+  // not regenerated, since firmware byte parity is checked against this file. `temperature` is written before
+  // `turbidity` in every values object
   // because object-literal order is JSON key order and JSON key order is signed bytes; wire::buildBody emits
   // its addValue calls in the same order.
   {
