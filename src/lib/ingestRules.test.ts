@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { classifySamples, deriveDeviceEvents, MAX_SAMPLE_AGE_MS, MAX_SAMPLE_SKEW_MS } from "./ingestRules.ts";
+import { PARAMETER_BOUNDS } from "./parameters.ts";
 
-// Characterization of today's (temperature-only) ingest decisions. Pure: no DB, no env, no wall clock — every
+// Characterization of today's temperature and turbidity ingest decisions. Pure: no DB, no env, no wall clock — every
 // timestamp is derived from a fixed receivedAt so the boundaries are exact.
 const R = new Date("2030-01-01T00:00:00Z");
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -173,6 +174,116 @@ describe("classifySamples", () => {
     const { rows } = classifySamples(device, [sample, { ...sample }], R);
     assert.equal(rows.length, 2);
     assert.deepEqual(rows[0], rows[1]);
+  });
+});
+
+describe("classifySamples — turbidity (NTU)", () => {
+  const TB = PARAMETER_BOUNDS.turbidity;
+
+  for (const value of [TB.min, 25, 3000, TB.max]) {
+    test(`${value} NTU is accepted`, () => {
+      const { rows, rejected } = classifySamples(device, [{ values: { turbidity: value } }], R);
+      assert.equal(rejected.length, 0);
+      assert.deepEqual(rows, [
+        { pondId: "p1", deviceId: "d1", parameter: "turbidity", value, recordedAt: R, receivedAt: R },
+      ]);
+    });
+  }
+
+  for (const value of [-0.01, 4000.01]) {
+    test(`${value} NTU is rejected`, () => {
+      const { rows, rejected, storedParameters } = classifySamples(device, [{ values: { turbidity: value } }], R);
+      assert.equal(rows.length, 0);
+      assert.equal(storedParameters.size, 0);
+      assert.deepEqual(rejected, [{ recordedAt: R, parameter: "turbidity", value, reason: "outside 0..4000" }]);
+    });
+  }
+
+  test("temperature + turbidity in one sample store two rows", () => {
+    const { rows, rejected, storedParameters } = classifySamples(
+      device,
+      [{ values: { temperature: 27, turbidity: 12 } }],
+      R,
+    );
+    assert.equal(rejected.length, 0);
+    assert.deepEqual(
+      rows.map((r) => [r.parameter, r.value]),
+      [
+        ["temperature", 27],
+        ["turbidity", 12],
+      ],
+    );
+    assert.deepEqual([...storedParameters], ["temperature", "turbidity"]);
+  });
+
+  test("turbidity-only sample (temperature probe unplugged) is stored", () => {
+    const { rows, rejected, storedParameters } = classifySamples(device, [{ values: { turbidity: 12 } }], R);
+    assert.equal(rejected.length, 0);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]!.parameter, "turbidity");
+    assert.deepEqual([...storedParameters], ["turbidity"]);
+  });
+
+  test("null turbidity beside a temperature is dropped silently", () => {
+    const { rows, rejected, storedParameters } = classifySamples(
+      device,
+      [{ values: { temperature: 27, turbidity: null } }],
+      R,
+    );
+    assert.equal(rejected.length, 0);
+    assert.deepEqual(
+      rows.map((r) => r.parameter),
+      ["temperature"],
+    );
+    assert.deepEqual([...storedParameters], ["temperature"]);
+  });
+
+  test("an out-of-bounds turbidity does not drop the temperature in the same sample", () => {
+    const { rows, rejected, storedParameters } = classifySamples(
+      device,
+      [{ values: { temperature: 27, turbidity: -5 } }],
+      R,
+    );
+    assert.deepEqual(
+      rows.map((r) => [r.parameter, r.value]),
+      [["temperature", 27]],
+    );
+    assert.deepEqual([...storedParameters], ["temperature"]);
+    assert.deepEqual(rejected, [{ recordedAt: R, parameter: "turbidity", value: -5, reason: "outside 0..4000" }]);
+  });
+
+  test("turbidity more than MAX_SAMPLE_SKEW_MS ahead is rejected like temperature", () => {
+    const { rows, rejected } = classifySamples(
+      device,
+      [{ recordedAt: at(MAX_SAMPLE_SKEW_MS + 1), values: { turbidity: 12 } }],
+      R,
+    );
+    assert.equal(rows.length, 0);
+    assert.equal(rejected.length, 1);
+    assert.equal(rejected[0]!.parameter, "turbidity");
+    assert.equal(rejected[0]!.reason, "recorded in the future (check the device clock)");
+  });
+
+  test("turbidity older than MAX_SAMPLE_AGE_MS is rejected like temperature", () => {
+    const { rows, rejected } = classifySamples(
+      unassignedClock,
+      [{ recordedAt: at(-MAX_SAMPLE_AGE_MS - 1), values: { turbidity: 12 } }],
+      R,
+    );
+    assert.equal(rows.length, 0);
+    assert.equal(rejected.length, 1);
+    assert.equal(rejected[0]!.parameter, "turbidity");
+    assert.equal(rejected[0]!.reason, "older than 7 days");
+  });
+
+  test("an unknown parameter beside turbidity is rejected while turbidity is stored", () => {
+    const { rows, rejected, storedParameters } = classifySamples(device, [{ values: { ph: 7, turbidity: 12 } }], R);
+    assert.deepEqual(
+      rows.map((r) => [r.parameter, r.value]),
+      [["turbidity", 12]],
+    );
+    assert.deepEqual([...storedParameters], ["turbidity"]);
+    assert.deepEqual(rejected, [{ recordedAt: R, parameter: "ph", value: 7, reason: "unknown parameter" }]);
   });
 });
 

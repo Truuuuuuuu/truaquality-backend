@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import type { Device } from "../generated/prisma/client.ts";
 import { createPrismaFake } from "../testing/prismaFake.ts";
 import { ingestSamples } from "./ingest.ts";
+import { thresholdsFor } from "./parameters.ts";
 
 // Shell-trace characterization of ingestSamples against the in-memory Prisma fake (TEST-01). Written against
 // the UNMODIFIED ingest.ts before the pure core is extracted: any behavior change in the extraction fails here.
@@ -389,4 +390,85 @@ test("unassigned device still gets diag fields and events (they are device-level
     fake.deviceEvents.map((e) => e.kind),
     ["REBOOT", "SENSOR_FAULT"],
   );
+});
+
+// Turbidity rides beside temperature in the same sample (firmware 0.6.0+). Nominal values keep the trace short.
+const NOMINAL_NTU = thresholdsFor(null).turbidity.safeMax - 10;
+const mixedBatch = (temperature: number, turbidity: number, recordedAt: Date): Message => ({
+  firmwareVersion: "simulator",
+  samples: [{ recordedAt, values: { temperature, turbidity } }],
+});
+
+test("mixed temperature + turbidity batch: one createMany, one pond read, one alert transaction per parameter", async (t) => {
+  const fake = createPrismaFake();
+  fake.install(t);
+
+  const result = await ingestSamples(device(), mixedBatch(28, NOMINAL_NTU, minute(0)), minute(0));
+
+  assert.deepEqual(result, { status: "stored", accepted: 2, duplicates: 0, rejected: [] });
+  assert.deepEqual(fake.ops(), [
+    "device.update",
+    "reading.createMany",
+    "pond.findUnique",
+    "$transaction",
+    "tx.$executeRaw",
+    "tx.reading.findFirst",
+    "tx.alert.findFirst",
+    "$transaction",
+    "tx.$executeRaw",
+    "tx.reading.findFirst",
+    "tx.alert.findFirst",
+  ]);
+
+  const [createMany] = argsOf(fake, "reading.createMany");
+  assert.equal(createMany.skipDuplicates, true);
+  assert.deepEqual(createMany.data, [
+    {
+      pondId: "pond-1",
+      deviceId: DEVICE_ID,
+      parameter: "temperature",
+      value: 28,
+      recordedAt: minute(0),
+      receivedAt: minute(0),
+    },
+    {
+      pondId: "pond-1",
+      deviceId: DEVICE_ID,
+      parameter: "turbidity",
+      value: NOMINAL_NTU,
+      recordedAt: minute(0),
+      receivedAt: minute(0),
+    },
+  ]);
+
+  const locks = argsOf(fake, "tx.$executeRaw");
+  assert.deepEqual(
+    locks.map((l) => l.values[0]),
+    ["alert:pond-1:temperature", "alert:pond-1:turbidity"],
+  );
+  for (const lock of locks) assert.match(lock.sql, /pg_advisory_xact_lock\(hashtext\(\?\)\)/);
+
+  assert.deepEqual(argsOf(fake, "pond.findUnique"), [{ where: { id: "pond-1" }, select: { pondType: true } }]);
+  assert.equal(fake.readings.length, 2);
+  assert.equal(fake.alerts.length, 0);
+  assert.equal(fake.notifications.length, 0);
+});
+
+test("duplicate turbidity redelivery: second delivery stores nothing and skips alert evaluation", async (t) => {
+  const fake = createPrismaFake();
+  fake.install(t);
+
+  const turbidityBatch: Message = {
+    firmwareVersion: "simulator",
+    samples: [{ recordedAt: minute(0), values: { turbidity: NOMINAL_NTU } }],
+  };
+  const first = await ingestSamples(device(), turbidityBatch, minute(0));
+  const second = await ingestSamples(device(), turbidityBatch, minute(1));
+
+  assert.deepEqual(first, { status: "stored", accepted: 1, duplicates: 0, rejected: [] });
+  assert.deepEqual(second, { status: "stored", accepted: 0, duplicates: 1, rejected: [] });
+  assert.equal(fake.ops().filter((op) => op === "$transaction").length, 1);
+  assert.deepEqual(fake.ops().slice(-2), ["device.update", "reading.createMany"]);
+  assert.equal(fake.readings.length, 1);
+  assert.equal(argsOf(fake, "tx.$executeRaw")[0]!.values[0], "alert:pond-1:turbidity");
 });
