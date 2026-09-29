@@ -17,7 +17,18 @@ export function isParameterId(value: string): value is ParameterId {
   return Object.hasOwn(PARAMETER_BOUNDS, value);
 }
 
-export type Threshold = { safeMin: number; safeMax: number; criticalMin: number; criticalMax: number };
+export type Threshold = {
+  safeMin: number;
+  safeMax: number;
+  criticalMin: number;
+  criticalMax: number;
+  // Set only while a parameter's critical line is a placeholder awaiting BFAR (turbidity today). criticalMax stays
+  // numeric so severityFor judges exactly as before, but the dashboard reads this marker to draw no critical band
+  // and to keep its chart axis off the placeholder instead of stretching it to the 3000 NTU sensor ceiling. When
+  // BFAR's figure replaces TURBIDITY_CRITICAL_MAX_NTU, drop the marker and the frontend band appears with no
+  // frontend edit. Optional (absent, not false) so a parameter with a real critical line serializes as before.
+  criticalPending?: true;
+};
 
 // A pond's thresholds may depend on what it's stocked for, so they're keyed by Pond.pondType. UNSET covers a
 // pond an admin hasn't classified yet.
@@ -47,7 +58,7 @@ const SHARED: Record<ParameterId, Threshold> = {
   //   source: no NTU number here comes from Secchi depth.
   // - Sensor caveat: NTU is a vendor-curve estimate (no reference turbidimeter yet); the bench noise-floor check
   //   against 25 NTU is pending (see .planning/phases/04-backend-turbidity-ingest-alerts/04-TURBIDITY-THRESHOLDS.md).
-  turbidity: { safeMin: 0, safeMax: 25, criticalMin: 0, criticalMax: TURBIDITY_CRITICAL_MAX_NTU },
+  turbidity: { safeMin: 0, safeMax: 25, criticalMin: 0, criticalMax: TURBIDITY_CRITICAL_MAX_NTU, criticalPending: true },
 };
 
 // Safe/critical ranges that raise alerts (lib/alerts.ts). Unlike PARAMETER_BOUNDS, a value outside these is a
@@ -96,7 +107,15 @@ export function severityFor(
 // The real "°" is safe here: it's written into an Excel cell's number format inside a proper .xlsx (OOXML)
 // file, not raw bytes in a plain-text CSV — the earlier "¬∞C" mojibake was specifically a CSV-in-Excel
 // encoding problem (some Excel builds guessed Mac OS Roman instead of UTF-8) that doesn't exist for .xlsx.
-export const PARAMETER_DISPLAY: Record<ParameterId, { label: string; unit: string; precision: number }> = {
-  temperature: { label: "Temperature", unit: "°C", precision: 1 },
-  turbidity: { label: "Turbidity", unit: "NTU", precision: 1 },
+//
+// exportHeader is the data table's column heading. Turbidity's says "approx." because the NTU value is a low-cost
+// optical estimate off a vendor curve, not a reference turbidimeter reading; the cells stay real numbers so the
+// sheet can still be charted and averaged. label stays plain because the report's "Parameter" row and filenames
+// use it.
+export const PARAMETER_DISPLAY: Record<
+  ParameterId,
+  { label: string; unit: string; precision: number; exportHeader: string }
+> = {
+  temperature: { label: "Temperature", unit: "°C", precision: 1, exportHeader: "Temperature" },
+  turbidity: { label: "Turbidity", unit: "NTU", precision: 1, exportHeader: "Turbidity (NTU, approx.)" },
 };

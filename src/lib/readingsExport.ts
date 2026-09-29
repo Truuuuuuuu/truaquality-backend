@@ -143,7 +143,7 @@ export async function streamReadingsExport(res: Response, { pond, parameter, fro
   // rather than one row per parameter per timestamp — reads as a normal wide table instead of a long,
   // repetitive log once more than one parameter is involved.
   const columns = parameter ? [parameter] : PARAMETER_IDS;
-  const headerRow = sheet.addRow(["Time (Asia/Manila)", ...columns.map((colId) => PARAMETER_DISPLAY[colId].label)]);
+  const headerRow = sheet.addRow(["Time (Asia/Manila)", ...columns.map((colId) => PARAMETER_DISPLAY[colId].exportHeader)]);
   headerRow.eachCell((cell) => {
     cell.font = { bold: true };
     cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE2E8F0" } };
@@ -153,7 +153,7 @@ export async function streamReadingsExport(res: Response, { pond, parameter, fro
   headerRow.commit();
   sheet.getColumn(1).width = 22;
   columns.forEach((colId, index) => {
-    sheet.getColumn(index + 2).width = Math.max(14, PARAMETER_DISPLAY[colId].label.length + 4);
+    sheet.getColumn(index + 2).width = Math.max(14, PARAMETER_DISPLAY[colId].exportHeader.length + 4);
   });
 
   if (resolution === "raw") {
