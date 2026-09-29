@@ -6,6 +6,7 @@ import {
   PARAMETER_IDS,
   PARAMETER_THRESHOLDS,
   severityFor,
+  TURBIDITY_CRITICAL_MAX_NTU,
   thresholdProfileFor,
   thresholdsFor,
   type Threshold,
@@ -58,9 +59,8 @@ describe("severityFor — temperature edges (safe 26-31, critical 24-33)", () =>
   }
 });
 
-// The low side of the band ordering: criticalMin <= safeMin. Kept in its own helper because Phase 4 may make a
-// parameter's bound one-sided (ALRT-03, e.g. turbidity has no meaningful "too low"), and will adjust this
-// check rather than the high-side one.
+// The low side of the band ordering: criticalMin <= safeMin. Turbidity's low side is 0/0 — one-sided by design
+// (ALRT-03, clear water has no meaningful "too low") — and still satisfies this check, since 0 <= 0.
 function assertLowSideOrdered(label: string, t: Threshold) {
   assert.ok(t.criticalMin <= t.safeMin, `${label}: criticalMin ${t.criticalMin} > safeMin ${t.safeMin}`);
 }
@@ -94,5 +94,74 @@ describe("threshold invariants over every parameter x profile", () => {
       assert.equal(typeof d.unit, "string");
       assert.ok(Number.isInteger(d.precision));
     }
+  });
+});
+
+describe("turbidity (NTU) — BFAR safeMax 25, criticalMax PENDING BFAR", () => {
+  const TB = thresholdsFor(null).turbidity;
+  const POND_TYPES = [null, "FRESHWATER", "BRACKISH", "SALTWATER", "LAKE"];
+
+  test("PARAMETER_IDS is temperature then turbidity (export column order)", () => {
+    assert.deepEqual(PARAMETER_IDS, ["temperature", "turbidity"]);
+  });
+
+  test("bounds accept every firmware value 0..3000 NTU with refit headroom", () => {
+    assert.deepEqual(PARAMETER_BOUNDS.turbidity, { min: 0, max: 4000 });
+    // 3000 here is the firmware's vendor-curve clamp ceiling (Phase 3 D-02), not a threshold.
+    assert.ok(PARAMETER_BOUNDS.turbidity.max >= 3000);
+  });
+
+  test("safeMax is BFAR's 25 NTU (the one pinned threshold literal)", () => {
+    assert.equal(thresholdsFor(null).turbidity.safeMax, 25);
+  });
+
+  test("criticalMax is the named PENDING BFAR constant, above safeMax and reachable within bounds", () => {
+    assert.equal(TB.criticalMax, TURBIDITY_CRITICAL_MAX_NTU);
+    assert.ok(TB.safeMax < TB.criticalMax);
+    assert.ok(TB.criticalMax + 1 <= PARAMETER_BOUNDS.turbidity.max);
+  });
+
+  const edges: Array<[string, () => number, "WARNING" | "CRITICAL" | null]> = [
+    ["bounds.min", () => PARAMETER_BOUNDS.turbidity.min, null],
+    ["0 (clear water)", () => 0, null],
+    ["safeMax", () => TB.safeMax, null],
+    ["safeMax + 0.01", () => TB.safeMax + 0.01, "WARNING"],
+    ["criticalMax", () => TB.criticalMax, "WARNING"],
+    ["criticalMax + 0.01", () => TB.criticalMax + 0.01, "CRITICAL"],
+  ];
+  for (const [label, value, expected] of edges) {
+    test(`${label} -> ${expected} for every pond type`, () => {
+      for (const pondType of POND_TYPES) {
+        assert.equal(severityFor("turbidity", value(), pondType), expected, `pondType ${pondType}`);
+      }
+    });
+  }
+
+  test("ALRT-03: no accepted value can be low for any profile", () => {
+    for (const profile of PROFILES) {
+      const t = PARAMETER_THRESHOLDS[profile].turbidity;
+      assert.ok(t.safeMin <= PARAMETER_BOUNDS.turbidity.min, `${profile}: safeMin above bounds.min`);
+      assert.ok(t.criticalMin <= PARAMETER_BOUNDS.turbidity.min, `${profile}: criticalMin above bounds.min`);
+    }
+  });
+
+  test("D-05: every profile resolves the same shared turbidity band", () => {
+    for (const profile of PROFILES) {
+      assert.deepEqual(PARAMETER_THRESHOLDS[profile].turbidity, PARAMETER_THRESHOLDS.UNSET.turbidity);
+    }
+  });
+
+  test("display metadata is Turbidity / NTU / precision 1", () => {
+    assert.deepEqual(PARAMETER_DISPLAY.turbidity, { label: "Turbidity", unit: "NTU", precision: 1 });
+  });
+
+  test("export-format guard: every precision >= 1, turbidity format is 0.0\" NTU\"", () => {
+    // readingsExport.numFmtFor builds `0.` + precision zeros; precision 0 would leave a stray decimal point.
+    for (const id of PARAMETER_IDS) {
+      const precision = PARAMETER_DISPLAY[id].precision;
+      assert.ok(Number.isInteger(precision) && precision >= 1, `${id}: precision ${precision} < 1`);
+    }
+    const d = PARAMETER_DISPLAY.turbidity;
+    assert.equal(`0.${"0".repeat(d.precision)}" ${d.unit}"`, '0.0" NTU"');
   });
 });
