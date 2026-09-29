@@ -2,7 +2,7 @@ import type { z } from "zod";
 import type { Device } from "../generated/prisma/client.ts";
 import type { ingestSchema } from "../schemas/ingest.ts";
 import { evaluatePondAlerts } from "./alerts.ts";
-import { classifySamples, type RejectedValue } from "./ingestRules.ts";
+import { classifySamples, deriveDeviceEvents, type RejectedValue } from "./ingestRules.ts";
 import { prisma } from "./prisma.ts";
 
 // The constants and RejectedValue live in ingestRules.ts (the pure decision logic). Import them from
@@ -20,15 +20,40 @@ export async function ingestSamples(
   message: z.infer<typeof ingestSchema>,
   receivedAt = new Date(),
 ): Promise<IngestResult> {
-  // Recorded even for an unassigned device, so admins can see a freshly installed unit is online.
+  const { diag, sensors } = message;
+  // Recorded even for an unassigned device, so admins can see a freshly installed unit is online. The diag and
+  // sensor fields are only written when the message carries them, so a pre-0.6.0 message updates exactly what
+  // it always did and an older unit keeps its last self-report.
   await prisma.device.update({
     where: { id: device.id },
     data: {
       lastSeenAt: receivedAt,
       ...(message.firmwareVersion ? { firmwareVersion: message.firmwareVersion } : {}),
       ...(message.wifiSsid ? { wifiSsid: message.wifiSsid } : {}),
+      ...(diag
+        ? {
+            rssi: diag.rssi,
+            uptimeS: diag.uptimeS,
+            resetReason: diag.resetReason,
+            freeHeap: diag.freeHeap,
+            queuedSamples: diag.queued,
+          }
+        : {}),
+      ...(sensors ? { sensorStatus: sensors } : {}),
+      ...(diag || sensors ? { diagnosticsAt: receivedAt } : {}),
     },
   });
+
+  // Events are derived against `device`, the row the subscriber loaded just before this message (the pre-update
+  // state), and are device-level, so they are written before the unassigned return. They deliberately do NOT
+  // share a transaction with the device.update above: a failed statement aborts a Postgres transaction, so an
+  // event-write failure would take the lastSeenAt write down with it — and an event must never fail ingest.
+  const drafts = deriveDeviceEvents(device, message);
+  if (drafts.length > 0) {
+    await prisma.deviceEvent
+      .createMany({ data: drafts.map((draft) => ({ deviceId: device.id, ...draft, createdAt: receivedAt })) })
+      .catch((err) => console.error(`[device-events] write failed for device ${device.id}:`, err));
+  }
 
   if (!device.pondId) {
     return { status: "unassigned" };

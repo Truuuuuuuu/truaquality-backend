@@ -73,3 +73,63 @@ export function classifySamples(
   }
   return { rows, rejected, storedParameters };
 }
+
+// String union rather than the generated DeviceEventKind enum, so this module stays Prisma-free. OFFLINE/ONLINE
+// are not here: only the watchdog can see a unit that stopped talking.
+export type DeviceEventDraft = {
+  kind: "REBOOT" | "SENSOR_FAULT" | "SENSOR_RECOVERED" | "FIRMWARE_CHANGED";
+  parameter: string | null;
+  detail: string | null;
+};
+
+// sensorStatus is a Prisma Json column, so anything could be in it; only string values count.
+function readSensorStatus(value: unknown): Record<string, string> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  const statuses: Record<string, string> = {};
+  for (const [key, status] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof status === "string") statuses[key] = status;
+  }
+  return statuses;
+}
+
+// Compares one message against the device row as it was BEFORE this message was applied. A first-ever report
+// (null previous value) is a baseline, not a change — except a sensor that is already faulted on its first
+// report, which is exactly what someone installing the unit needs to see in the timeline.
+// Order: FIRMWARE_CHANGED, REBOOT, then sensor events in the message's `sensors` key order.
+export function deriveDeviceEvents(
+  previous: { firmwareVersion: string | null; uptimeS: number | null; sensorStatus: unknown },
+  message: z.infer<typeof ingestSchema>,
+): DeviceEventDraft[] {
+  const events: DeviceEventDraft[] = [];
+
+  if (message.firmwareVersion && previous.firmwareVersion && message.firmwareVersion !== previous.firmwareVersion) {
+    events.push({
+      kind: "FIRMWARE_CHANGED",
+      parameter: null,
+      detail: `${previous.firmwareVersion} → ${message.firmwareVersion}`,
+    });
+  }
+
+  // Uptime going backwards means the unit restarted since its last report.
+  if (message.diag && previous.uptimeS !== null && message.diag.uptimeS < previous.uptimeS) {
+    events.push({ kind: "REBOOT", parameter: null, detail: message.diag.resetReason });
+  }
+
+  if (message.sensors) {
+    const before = readSensorStatus(previous.sensorStatus);
+    for (const [parameter, status] of Object.entries(message.sensors)) {
+      const prior = before[parameter];
+      if (status === prior) continue;
+      if (status === "ok") {
+        // Unknown -> ok is the baseline case; only a real fault clearing is a recovery.
+        if (prior !== undefined) events.push({ kind: "SENSOR_RECOVERED", parameter, detail: status });
+      } else {
+        events.push({ kind: "SENSOR_FAULT", parameter, detail: status });
+      }
+    }
+  }
+
+  return events;
+}

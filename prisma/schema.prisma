@@ -97,14 +97,14 @@ model Pond {
 // id, and secretVersion (nothing secret is stored; rotating bumps the version). It never knows its pond —
 // ingest resolves the pond from pondId, so moving hardware is a reassignment.
 model Device {
-  id              String       @id @default(uuid()) @db.Uuid
-  serial          String       @unique
+  id              String         @id @default(uuid()) @db.Uuid
+  serial          String         @unique
   hardwareModel   String?
   label           String?
-  secretVersion   Int          @default(1)
-  status          DeviceStatus @default(ACTIVE)
-  pondId          String?      @unique @db.Uuid
-  pond            Pond?        @relation(fields: [pondId], references: [id], onDelete: SetNull)
+  secretVersion   Int            @default(1)
+  status          DeviceStatus   @default(ACTIVE)
+  pondId          String?        @unique @db.Uuid
+  pond            Pond?          @relation(fields: [pondId], references: [id], onDelete: SetNull)
   // When the device was last put on its current pond. Samples recorded earlier are refused, so a captured
   // message can't be replayed into the pond the device was moved to.
   assignedAt      DateTime?
@@ -117,10 +117,47 @@ model Device {
   // cycle lastSeenAt looks recent again. Null means "not currently flagged offline" — the offline-episode
   // equivalent of Alert.resolvedAt, just inverted (non-null here means open, not resolved).
   offlineSince    DateTime?
+  // Latest self-report from firmware >= 0.6.0 (the signed message's `diag` and `sensors`). Null until such a
+  // unit reports, and left untouched by messages without diag/sensors, so an older unit keeps its last values.
+  rssi            Int?
+  uptimeS         Int?
+  resetReason     String?
+  freeHeap        Int?
+  queuedSamples   Int?
+  // { "<parameter>": "<status token>" } as last reported, e.g. { "temperature": "ok", "turbidity": "no_signal" }.
+  sensorStatus    Json?
+  diagnosticsAt   DateTime?
   readings        Reading[]
   notifications   Notification[]
-  createdAt       DateTime     @default(now())
-  updatedAt       DateTime     @updatedAt
+  events          DeviceEvent[]
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+}
+
+enum DeviceEventKind {
+  OFFLINE
+  ONLINE
+  REBOOT
+  SENSOR_FAULT
+  SENSOR_RECOVERED
+  FIRMWARE_CHANGED
+}
+
+// Durable per-device timeline for the diagnostics page (and its 24 h uptime figure). Notifications can't serve:
+// they are one row per user and are deleted with the account. OFFLINE/ONLINE come from the watchdog; the rest
+// are derived at ingest against the device's previous row. Only transitions are recorded, never every message.
+model DeviceEvent {
+  id        String          @id @default(uuid()) @db.Uuid
+  deviceId  String          @db.Uuid
+  device    Device          @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  kind      DeviceEventKind
+  // Sensor events only: the parameter id whose status changed.
+  parameter String?
+  // Status token, reset reason, or "old → new" firmware version, depending on kind.
+  detail    String?
+  createdAt DateTime        @default(now())
+
+  @@index([deviceId, createdAt(sort: Desc)])
 }
 
 // One row per parameter per sample, so adding a sensor parameter needs no migration. pondId is copied at

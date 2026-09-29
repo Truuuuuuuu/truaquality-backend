@@ -5,7 +5,7 @@ import type { TestContext } from "node:test";
 import { prisma } from "../lib/prisma.ts";
 
 // In-memory, call-recording stand-in for the parts of the Prisma client that the reading path touches
-// (ingest.ts -> alerts.ts -> notify.ts). install(t) swaps the delegates on the real `prisma` singleton with
+// (ingest.ts -> alerts.ts -> notify.ts, plus ingest's deviceEvent writes). install(t) swaps the delegates on the real `prisma` singleton with
 // t.mock.property, which restores them automatically when the test ends.
 //
 // No DB connection is ever made: every delegate the reading path uses is replaced before the call, and
@@ -53,6 +53,16 @@ export type PrismaFakeOptions = {
   // Throws after the callback ran (a failure at commit): the work it did must be rolled back.
   failInTransaction?: boolean;
   createManyCount?: (rows: FakeReading[]) => number;
+  // deviceEvent.createMany throws (an event write must never fail ingest).
+  failDeviceEvents?: boolean;
+};
+
+export type FakeDeviceEvent = {
+  deviceId: string;
+  kind: string;
+  parameter: string | null;
+  detail: string | null;
+  createdAt?: Date;
 };
 
 type Where = Record<string, unknown>;
@@ -78,6 +88,7 @@ export function createPrismaFake(opts: PrismaFakeOptions = {}) {
   const readings: FakeReading[] = [];
   const alerts: FakeAlert[] = [];
   const notifications: FakeNotification[] = [];
+  const deviceEvents: FakeDeviceEvent[] = [];
   let alertSeq = 0;
 
   const record = (op: string, args: unknown) => {
@@ -90,6 +101,15 @@ export function createPrismaFake(opts: PrismaFakeOptions = {}) {
       // A fresh object, not args.data itself, so a caller mutating the result cannot reach back into
       // the arguments it passed in.
       return { id: args.where.id, ...args.data };
+    },
+  };
+
+  const deviceEvent = {
+    createMany: async (args: { data: FakeDeviceEvent[] }) => {
+      record("deviceEvent.createMany", args);
+      if (opts.failDeviceEvents) throw new Error("fake deviceEvent failure");
+      for (const row of args.data) deviceEvents.push({ ...row });
+      return { count: args.data.length };
     },
   };
 
@@ -264,12 +284,14 @@ export function createPrismaFake(opts: PrismaFakeOptions = {}) {
     readings,
     alerts,
     notifications,
+    deviceEvents,
     // Exposed so tests OF the double (prismaFake.test.ts) can drive a transaction directly and
     // typed, without going through a production call path.
     $transaction,
     ops: () => calls.map((c) => c.op),
     install(t: TestContext) {
       t.mock.property(prisma, "device", device as never);
+      t.mock.property(prisma, "deviceEvent", deviceEvent as never);
       t.mock.property(prisma, "reading", reading as never);
       t.mock.property(prisma, "pond", pond as never);
       t.mock.property(prisma, "$transaction", $transaction as never);

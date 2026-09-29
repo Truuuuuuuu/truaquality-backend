@@ -36,8 +36,13 @@ export async function runDeviceWatchdogCycle() {
       where: { status: "ACTIVE", pondId: { not: null }, offlineSince: null, lastSeenAt: { lt: cutoff } },
       select: { id: true },
     });
+    // Each transition also writes a DeviceEvent. Notifications are per user and vanish with deleted accounts;
+    // the event is the durable per-device timeline the diagnostics page computes uptime from. It is inside this
+    // transaction (not failure-isolated like ingest's events) because offlineSince and the timeline must agree,
+    // and a failed cycle already never escapes startDeviceWatchdog (its .catch logs it).
     for (const device of wentOffline) {
       await tx.device.update({ where: { id: device.id }, data: { offlineSince: new Date() } });
+      await tx.deviceEvent.create({ data: { deviceId: device.id, kind: "OFFLINE" } });
       await notifyActiveUsers(tx, { deviceId: device.id, kind: "DEVICE_OFFLINE", severity: "CRITICAL" });
     }
 
@@ -47,6 +52,7 @@ export async function runDeviceWatchdogCycle() {
     });
     for (const device of cameBackOnline) {
       await tx.device.update({ where: { id: device.id }, data: { offlineSince: null } });
+      await tx.deviceEvent.create({ data: { deviceId: device.id, kind: "ONLINE" } });
       await notifyActiveUsers(tx, { deviceId: device.id, kind: "DEVICE_ONLINE", severity: "CRITICAL" });
     }
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { classifySamples, MAX_SAMPLE_AGE_MS, MAX_SAMPLE_SKEW_MS } from "./ingestRules.ts";
+import { classifySamples, deriveDeviceEvents, MAX_SAMPLE_AGE_MS, MAX_SAMPLE_SKEW_MS } from "./ingestRules.ts";
 
 // Characterization of today's (temperature-only) ingest decisions. Pure: no DB, no env, no wall clock — every
 // timestamp is derived from a fixed receivedAt so the boundaries are exact.
@@ -173,5 +173,103 @@ describe("classifySamples", () => {
     const { rows } = classifySamples(device, [sample, { ...sample }], R);
     assert.equal(rows.length, 2);
     assert.deepEqual(rows[0], rows[1]);
+  });
+});
+
+describe("deriveDeviceEvents", () => {
+  const baseSample = [{ values: { temperature: 27 } }];
+  const diag = (uptimeS: number, resetReason: "power_on" | "brownout" = "power_on") => ({
+    rssi: -60,
+    uptimeS,
+    resetReason,
+    freeHeap: 200000,
+    queued: 0,
+  });
+  const prev = (overrides: Partial<{ firmwareVersion: string | null; uptimeS: number | null; sensorStatus: unknown }>) => ({
+    firmwareVersion: null,
+    uptimeS: null,
+    sensorStatus: null,
+    ...overrides,
+  });
+
+  test("uptime going backwards is a REBOOT carrying the reset reason", () => {
+    const events = deriveDeviceEvents(prev({ uptimeS: 5000 }), { diag: diag(60, "brownout"), samples: baseSample });
+    assert.deepEqual(events, [{ kind: "REBOOT", parameter: null, detail: "brownout" }]);
+  });
+  test("first diag ever (previous uptime null) is not a REBOOT", () => {
+    assert.deepEqual(deriveDeviceEvents(prev({}), { diag: diag(60), samples: baseSample }), []);
+  });
+  test("increasing uptime is not a REBOOT", () => {
+    assert.deepEqual(deriveDeviceEvents(prev({ uptimeS: 60 }), { diag: diag(120), samples: baseSample }), []);
+  });
+
+  test("firmware version change", () => {
+    const events = deriveDeviceEvents(prev({ firmwareVersion: "0.5.0" }), { firmwareVersion: "0.6.0", samples: baseSample });
+    assert.deepEqual(events, [{ kind: "FIRMWARE_CHANGED", parameter: null, detail: "0.5.0 → 0.6.0" }]);
+  });
+  test("no firmware event from null, the same version, or a message without a version", () => {
+    assert.deepEqual(deriveDeviceEvents(prev({}), { firmwareVersion: "0.6.0", samples: baseSample }), []);
+    assert.deepEqual(deriveDeviceEvents(prev({ firmwareVersion: "0.6.0" }), { firmwareVersion: "0.6.0", samples: baseSample }), []);
+    assert.deepEqual(deriveDeviceEvents(prev({ firmwareVersion: "0.6.0" }), { samples: baseSample }), []);
+  });
+
+  test("ok -> not_found is a SENSOR_FAULT", () => {
+    const events = deriveDeviceEvents(prev({ sensorStatus: { temperature: "ok" } }), {
+      sensors: { temperature: "not_found" },
+      samples: baseSample,
+    });
+    assert.deepEqual(events, [{ kind: "SENSOR_FAULT", parameter: "temperature", detail: "not_found" }]);
+  });
+  test("not_found -> ok is a SENSOR_RECOVERED", () => {
+    const events = deriveDeviceEvents(prev({ sensorStatus: { temperature: "not_found" } }), {
+      sensors: { temperature: "ok" },
+      samples: baseSample,
+    });
+    assert.deepEqual(events, [{ kind: "SENSOR_RECOVERED", parameter: "temperature", detail: "ok" }]);
+  });
+  test("one fault changing to another is a new SENSOR_FAULT", () => {
+    const events = deriveDeviceEvents(prev({ sensorStatus: { temperature: "not_found" } }), {
+      sensors: { temperature: "disconnected" },
+      samples: baseSample,
+    });
+    assert.deepEqual(events, [{ kind: "SENSOR_FAULT", parameter: "temperature", detail: "disconnected" }]);
+  });
+  test("the same fault twice records nothing", () => {
+    const events = deriveDeviceEvents(prev({ sensorStatus: { temperature: "not_found" } }), {
+      sensors: { temperature: "not_found" },
+      samples: baseSample,
+    });
+    assert.deepEqual(events, []);
+  });
+  test("a fault on first report (missing key or null sensorStatus) is recorded; ok on first report is not", () => {
+    for (const sensorStatus of [null, {}, { turbidity: "ok" }, "garbage", ["x"]]) {
+      assert.deepEqual(deriveDeviceEvents(prev({ sensorStatus }), { sensors: { temperature: "not_found" }, samples: baseSample }), [
+        { kind: "SENSOR_FAULT", parameter: "temperature", detail: "not_found" },
+      ]);
+      assert.deepEqual(deriveDeviceEvents(prev({ sensorStatus }), { sensors: { temperature: "ok" }, samples: baseSample }), []);
+    }
+  });
+  test("a message without sensors derives no sensor events", () => {
+    assert.deepEqual(deriveDeviceEvents(prev({ sensorStatus: { temperature: "ok" } }), { samples: baseSample }), []);
+  });
+  test("order: FIRMWARE_CHANGED, REBOOT, then sensors in message key order", () => {
+    const events = deriveDeviceEvents(
+      prev({ firmwareVersion: "0.5.0", uptimeS: 900, sensorStatus: { temperature: "ok", turbidity: "no_signal" } }),
+      {
+        firmwareVersion: "0.6.0",
+        diag: diag(10),
+        sensors: { turbidity: "ok", temperature: "disconnected" },
+        samples: baseSample,
+      },
+    );
+    assert.deepEqual(
+      events.map((e) => [e.kind, e.parameter]),
+      [
+        ["FIRMWARE_CHANGED", null],
+        ["REBOOT", null],
+        ["SENSOR_RECOVERED", "turbidity"],
+        ["SENSOR_FAULT", "temperature"],
+      ],
+    );
   });
 });

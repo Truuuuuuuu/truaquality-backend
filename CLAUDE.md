@@ -20,6 +20,14 @@ Current surface area:
 - `/me` (protected): `GET` own profile, `DELETE` own account (password-confirmed, see "Identity model")
 - `/ponds`, `/ponds/:id`, `/ponds/:id/readings` (paginated), `/ponds/:id/series`, `/ponds/:id/readings/export`
   (.xlsx), `/devices` (protected, any role)
+- `GET /devices/:id/diagnostics` (protected, any role): maintenance view of one unit —
+  `{ health: {rssi, uptimeS, resetReason, freeHeap, queuedSamples, diagnosticsAt, offlineSince}, sensors: [{parameter,
+  lastReadingAt, lastValue, readings24h, longestGapMin24h, reportedStatus}], uptime24h, events }`. `sensors` lists
+  every `PARAMETER_IDS` entry plus any extra key the unit reports in `sensorStatus` (e.g. turbidity before its bounds
+  land). Latest value per parameter is a `CROSS JOIN LATERAL ... LIMIT 1` on the `(deviceId, parameter, recordedAt)`
+  unique index (never `DISTINCT ON`); 24 h completeness is one `lag()` query; `uptime24h` (null until the unit has
+  ever reported) comes from `uptimePercent` in the pure `src/lib/deviceDiagnosticsRules.ts` over the unit's
+  OFFLINE/ONLINE `DeviceEvent`s; `events` is the latest 50.
 - `/notifications` (protected, caller's own only): list (keyset-paginated, includes `unreadCount`),
   `POST /notifications/:id/read`, `POST /notifications/read-all`
 - `/admin/*` (admin only): user invites, resend invite, user enable/disable; `/admin/ponds` (create, rename,
@@ -175,13 +183,18 @@ resolution of `tsc`/`tsx`/`ts-node`:
 - `npm run simulate:devices -- --device <deviceId>:<deviceSecret> [--device ...] [--interval 60]`
   (`scripts/simulate-devices.ts`) is **dev only**: it publishes synthetic, correctly signed readings to the
   MQTT broker as if it were ESP32 units, so the multi-pond UI can be tested before hardware is installed. Never
-  point it at a production broker.
+  point it at a production broker. Every message carries integer `diag` and a `sensors` map like firmware 0.6.0;
+  `--fault <parameter>=<status>` (repeatable, status validated against `SENSOR_STATUSES`) reports that sensor with
+  that status and omits its value, to demo a SENSOR_FAULT (restart without it to see SENSOR_RECOVERED).
 - `npm run purge:parameters -- --parameter <id> [--parameter ...] [--apply]` (`scripts/purge-parameters.ts`)
   deletes the stored readings, hourly summaries, and alerts (plus their notifications) of a parameter that has
   been removed from `PARAMETER_BOUNDS`. Dry run unless `--apply`; refuses live parameter ids.
 - `npm run generate:signing-vectors` (`scripts/generate-signing-vectors.ts`) is **dev only**: regenerates
   `src/lib/__fixtures__/signing-vectors.v1.json` from the real `signMessage`. The firmware mirrors these
-  vectors byte-for-byte (Phase 2), so changing them means updating the firmware copy too.
+  vectors byte-for-byte (`firmware/scripts/sync-golden-vectors.mjs`), so changing them means updating the firmware
+  copy too. There are 8 vectors, all at `firmwareVersion` 0.6.0 (the version is inside the signed body, so bumping it
+  changes every signature); the last, `diagnostics-and-sensor-status`, pins the full 0.6.0 key order. The script
+  refuses (exit 1, nothing written) a sample value the firmware can't reproduce or a non-int32 `diag` number.
 - `npm run seed:admin` (`scripts/seed-admin.ts`) bootstraps the first admin the same way. It is
   idempotent: an existing profile just gets promoted.
 - Inviting real users requires **custom SMTP** in Supabase. The built-in mailer is heavily rate-limited.
@@ -219,8 +232,22 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
   - Each message is `v1.<hex HMAC-SHA256>.<JSON body>`, with the HMAC over `<topic>\n<body>`
     (`src/lib/deviceMessages.ts`). The firmware (`firmware/lib/Uplink`) and the simulator must match it
     exactly.
-  - The body is `{firmwareVersion, wifiSsid?, samples}`; key order is signed bytes. `wifiSsid` is per message,
-    optional (firmware < 0.5.0 omits it), and stored on `Device.wifiSsid` only when non-empty.
+  - The body is `{firmwareVersion, wifiSsid?, diag?, sensors?, samples}`; key order is signed bytes. `wifiSsid` is
+    per message, optional (firmware < 0.5.0 omits it), and stored on `Device.wifiSsid` only when non-empty.
+  - `diag` and `sensors` (firmware >= 0.6.0, both optional; older units omit them and their stored values are left
+    untouched):
+    - `diag`: `{rssi` -127..0 dBm, `uptimeS` 0..int32 seconds since boot, `resetReason`, `freeHeap` 0..int32 bytes,
+      `queued` 0..120 buffered samples`}`, stored on `Device.rssi/uptimeS/resetReason/freeHeap/queuedSamples`.
+      **Every diag number must be an integer**: ArduinoJson and `JSON.stringify` print integers identically but can
+      differ on floats, and these bytes are signed.
+    - `resetReason` tokens (`RESET_REASONS`): `power_on | software | panic | int_wdt | task_wdt | wdt | brownout |
+      deep_sleep | external | unknown`.
+    - `sensors`: `{ "<parameter>": "<status>" }`, stored as `Device.sensorStatus` (Json). Status tokens
+      (`SENSOR_STATUSES`): `ok | not_found | disconnected | power_on_value` (temperature), `no_signal | uncalibrated |
+      over_range` (turbidity). A sensor whose status isn't `ok` has its value omitted from the sample. Keys are a
+      bounded id regex (max 8), not `PARAMETER_IDS`, so a sensor reported before it's a known parameter never
+      rejects the whole signed message.
+    - `Device.diagnosticsAt` is the receive time of the last message carrying either.
   - **Secrets are derived, not stored** (`src/lib/deviceSecrets.ts`): HMAC(`DEVICE_SECRET_MASTER_KEY`,
     `device-secret:<id>:<secretVersion>`).
     - Rotating a device bumps `secretVersion`.
@@ -275,6 +302,18 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
     export doesn't sit in memory), for reporting outside the app — one column per parameter, one row per
     timestamp, bordered header/data cells, and real numeric cells carrying a custom number format that shows
     the unit (e.g. `27.6 °C`) without turning the value into text.
+- `DeviceEvent`: the durable per-device timeline (`OFFLINE | ONLINE | REBOOT | SENSOR_FAULT | SENSOR_RECOVERED |
+  FIRMWARE_CHANGED`, optional `parameter`/`detail`), cascade-deleted with its device, RLS-enabled like every table.
+  Notifications can't serve this: they're per user and deleted with the account.
+  - OFFLINE/ONLINE are written by the watchdog in the same transaction as the `offlineSince` change, so the two
+    always agree.
+  - The rest are derived at ingest by the pure `deriveDeviceEvents` (`src/lib/ingestRules.ts`) against the device
+    row as loaded *before* the message: REBOOT when `uptimeS` goes backwards (detail = reset reason),
+    SENSOR_FAULT/SENSOR_RECOVERED on a status change (detail = token), FIRMWARE_CHANGED when the version differs
+    (detail = `old → new`). A first-ever report is a baseline, except a sensor already faulted on it.
+  - Ingest writes them with a standalone `createMany` wrapped in `.catch` (`[device-events]`), deliberately not in
+    a transaction with the `device.update`: an aborted transaction would lose `lastSeenAt` too, and an event must
+    never fail ingest. They're device-level, so an unassigned unit gets them as well.
 - `Reading`: **narrow table**, one row per parameter per sample (`parameter` is a string id).
   - Adding a sensor parameter needs no migration: add it to `PARAMETER_BOUNDS` in `src/lib/parameters.ts`
     (physical sanity limits for rejecting garbage), to `PARAMETER_DISPLAY` in the same file

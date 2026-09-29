@@ -32,6 +32,13 @@ function device(overrides: Partial<Device> = {}): Device {
     wifiSsid: null,
     lastSeenAt: null,
     offlineSince: null,
+    rssi: null,
+    uptimeS: null,
+    resetReason: null,
+    freeHeap: null,
+    queuedSamples: null,
+    sensorStatus: null,
+    diagnosticsAt: null,
     createdAt: at(-2 * DAY),
     updatedAt: at(-2 * DAY),
     ...overrides,
@@ -301,4 +308,85 @@ test("in-batch identical samples: both rows sent, the DB-level dedupe counts one
   const [createMany] = argsOf(fake, "reading.createMany");
   assert.equal(createMany.data.length, 2);
   assert.deepEqual(result, { status: "stored", accepted: 1, duplicates: 1, rejected: [] });
+});
+
+// Firmware 0.6.0 shape: diag + sensors ride along with the samples (key order irrelevant once parsed).
+const diagMessage = (overrides: Partial<Message> = {}): Message => ({
+  firmwareVersion: "0.6.0",
+  diag: { rssi: -67, uptimeS: 60, resetReason: "brownout", freeHeap: 201344, queued: 3 },
+  sensors: { temperature: "ok", turbidity: "no_signal" },
+  samples: [{ recordedAt: minute(0), values: { temperature: 28 } }],
+  ...overrides,
+});
+
+test("diag + sensors are stored on the device, and derived events are written right after device.update", async (t) => {
+  const fake = createPrismaFake();
+  fake.install(t);
+
+  const previous = device({ firmwareVersion: "0.5.0", uptimeS: 5000, sensorStatus: { temperature: "ok" } });
+  const result = await ingestSamples(previous, diagMessage(), minute(0));
+
+  assert.deepEqual(result, { status: "stored", accepted: 1, duplicates: 0, rejected: [] });
+  assert.deepEqual(fake.ops().slice(0, 3), ["device.update", "deviceEvent.createMany", "reading.createMany"]);
+
+  const [update] = argsOf(fake, "device.update");
+  assert.deepEqual(update.data, {
+    lastSeenAt: minute(0),
+    firmwareVersion: "0.6.0",
+    rssi: -67,
+    uptimeS: 60,
+    resetReason: "brownout",
+    freeHeap: 201344,
+    queuedSamples: 3,
+    sensorStatus: { temperature: "ok", turbidity: "no_signal" },
+    diagnosticsAt: minute(0),
+  });
+
+  assert.deepEqual(fake.deviceEvents, [
+    { deviceId: DEVICE_ID, kind: "FIRMWARE_CHANGED", parameter: null, detail: "0.5.0 → 0.6.0", createdAt: minute(0) },
+    { deviceId: DEVICE_ID, kind: "REBOOT", parameter: null, detail: "brownout", createdAt: minute(0) },
+    { deviceId: DEVICE_ID, kind: "SENSOR_FAULT", parameter: "turbidity", detail: "no_signal", createdAt: minute(0) },
+  ]);
+});
+
+test("diag with no derivable events writes no deviceEvent rows", async (t) => {
+  const fake = createPrismaFake();
+  fake.install(t);
+
+  await ingestSamples(device(), diagMessage({ sensors: { temperature: "ok" } }), minute(0));
+
+  assert.equal(fake.ops().includes("deviceEvent.createMany"), false);
+  const [update] = argsOf(fake, "device.update");
+  assert.equal(update.data.diagnosticsAt.getTime(), minute(0).getTime());
+});
+
+test("a deviceEvent write failure is logged and does not fail the ingest", async (t) => {
+  const fake = createPrismaFake({ failDeviceEvents: true });
+  fake.install(t);
+  const errorMock = t.mock.method(console, "error", () => {});
+
+  const result = await ingestSamples(device({ uptimeS: 5000 }), diagMessage(), minute(0));
+
+  assert.deepEqual(result, { status: "stored", accepted: 1, duplicates: 0, rejected: [] });
+  assert.equal(fake.readings.length, 1);
+  assert.equal(fake.deviceEvents.length, 0);
+  const [message, err] = errorMock.mock.calls[0]!.arguments as [string, Error];
+  assert.equal(message, `[device-events] write failed for device ${DEVICE_ID}:`);
+  assert.equal(err.message, "fake deviceEvent failure");
+});
+
+test("unassigned device still gets diag fields and events (they are device-level)", async (t) => {
+  const fake = createPrismaFake();
+  fake.install(t);
+
+  const result = await ingestSamples(device({ pondId: null, uptimeS: 5000 }), diagMessage(), minute(0));
+
+  assert.deepEqual(result, { status: "unassigned" });
+  assert.deepEqual(fake.ops(), ["device.update", "deviceEvent.createMany"]);
+  const [update] = argsOf(fake, "device.update");
+  assert.equal(update.data.rssi, -67);
+  assert.deepEqual(
+    fake.deviceEvents.map((e) => e.kind),
+    ["REBOOT", "SENSOR_FAULT"],
+  );
 });

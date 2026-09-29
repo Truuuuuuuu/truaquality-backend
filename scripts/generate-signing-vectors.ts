@@ -7,15 +7,16 @@
 //
 //   printf '%s\n%s' "$topic" "$body" | openssl dgst -sha256 -hmac "$secret"
 //
-// Phase 2 firmware mirrors these vectors byte-for-byte to prove it signs identically. Changing a vector (or the
-// wire format) means updating the firmware copy too.
+// The firmware mirrors these vectors byte-for-byte (firmware/scripts/sync-golden-vectors.mjs) to prove it signs
+// identically. Changing a vector (or the wire format, or the firmwareVersion inside every body — now 0.6.0) means
+// re-syncing the firmware copy too.
 import { writeFileSync } from "node:fs";
 import { readingsTopic, signMessage } from "../src/lib/deviceMessages.ts";
 
 const OPENSSL_CHECK = `printf '%s\\n%s' "$topic" "$body" | openssl dgst -sha256 -hmac "$secret"`;
 
-// Bodies are built from object literals in firmware key order (firmwareVersion, wifiSsid, samples[{recordedAt, values}]),
-// with binary-exact floats and whole-second "Z" timestamps (never toISOString, which emits ".000Z").
+// Bodies are built from object literals in firmware key order (firmwareVersion, wifiSsid, diag{rssi, uptimeS,
+// resetReason, freeHeap, queued}, sensors, samples[{recordedAt, values}]), with binary-exact floats and whole-second "Z" timestamps (never toISOString, which emits ".000Z").
 //
 // A numeric value must also be one the firmware can reproduce: at most 6 significant decimal digits, and either
 // 0 or within [1e-5, 1e7). ArduinoJson serializes a float with 6 decimal places (its TextFormatter dispatches on
@@ -23,14 +24,28 @@ const OPENSSL_CHECK = `printf '%s\\n%s' "$topic" "$body" | openssl dgst -sha256 
 // the shortest decimal that round-trips the double. A value outside the intersection makes the native firmware
 // suite fail on a one-digit difference deep inside a 200-character body — which reads like a signing bug and is
 // not one. assertFirmwareRepresentable() below enforces the rule so it can't be forgotten; realistic
-// temperature and turbidity readings at 1-2 decimal places comply comfortably.
-const inputs = [
+// temperature and turbidity readings at 1-2 decimal places comply comfortably. Every `diag` number must be a
+// plain int32 integer, which both serializers print identically.
+type VectorInput = {
+  name: string;
+  secret: string;
+  deviceId: string;
+  body: {
+    firmwareVersion: string;
+    wifiSsid?: string;
+    diag?: { rssi: number; uptimeS: number; resetReason: string; freeHeap: number; queued: number };
+    sensors?: Record<string, string>;
+    samples: { recordedAt: string; values: Record<string, number> }[];
+  };
+};
+
+const inputs: VectorInput[] = [
   {
     name: "single-temperature-sample",
     secret: "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
     deviceId: "00000000-0000-4000-8000-000000000001",
     body: {
-      firmwareVersion: "0.5.0",
+      firmwareVersion: "0.6.0",
       samples: [{ recordedAt: "2023-11-14T22:13:20Z", values: { temperature: 27.5 } }],
     },
   },
@@ -39,7 +54,7 @@ const inputs = [
     secret: "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
     deviceId: "00000000-0000-4000-8000-000000000001",
     body: {
-      firmwareVersion: "0.5.0",
+      firmwareVersion: "0.6.0",
       samples: [
         { recordedAt: "2023-11-14T22:13:20Z", values: { temperature: 27.5 } },
         { recordedAt: "2023-11-14T22:14:20Z", values: { temperature: 26.25 } },
@@ -52,7 +67,7 @@ const inputs = [
     secret: "golden-secret-not-real-BBBBBBBBBBBBBBBBBBBB",
     deviceId: "00000000-0000-4000-8000-000000000002",
     body: {
-      firmwareVersion: "0.5.0",
+      firmwareVersion: "0.6.0",
       samples: [{ recordedAt: "2023-11-14T22:13:20Z", values: { temperature: 26.25 } }],
     },
   },
@@ -67,7 +82,7 @@ const inputs = [
     secret: "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
     deviceId: "00000000-0000-4000-8000-000000000001",
     body: {
-      firmwareVersion: "0.5.0",
+      firmwareVersion: "0.6.0",
       samples: [{ recordedAt: "2023-11-14T22:13:20Z", values: { temperature: 27.5, turbidity: 12.3 } }],
     },
   },
@@ -78,7 +93,7 @@ const inputs = [
     secret: "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
     deviceId: "00000000-0000-4000-8000-000000000001",
     body: {
-      firmwareVersion: "0.5.0",
+      firmwareVersion: "0.6.0",
       samples: [{ recordedAt: "2023-11-14T22:13:20Z", values: { turbidity: 250.5 } }],
     },
   },
@@ -89,7 +104,7 @@ const inputs = [
     secret: "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
     deviceId: "00000000-0000-4000-8000-000000000001",
     body: {
-      firmwareVersion: "0.5.0",
+      firmwareVersion: "0.6.0",
       samples: [
         { recordedAt: "2023-11-14T22:13:20Z", values: { temperature: 27.5, turbidity: 12.3 } },
         { recordedAt: "2023-11-14T22:14:20Z", values: { temperature: 26.25 } },
@@ -104,8 +119,24 @@ const inputs = [
     secret: "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
     deviceId: "00000000-0000-4000-8000-000000000001",
     body: {
-      firmwareVersion: "0.5.0",
+      firmwareVersion: "0.6.0",
       wifiSsid: 'Bahay "Kubo" \\ Café',
+      samples: [{ recordedAt: "2023-11-14T22:13:20Z", values: { temperature: 27.5 } }],
+    },
+  },
+  {
+    // Pins the full 0.6.0 key order for the firmware — key order is signed bytes: firmwareVersion, wifiSsid,
+    // diag (rssi, uptimeS, resetReason, freeHeap, queued), sensors (temperature before turbidity), samples.
+    // Turbidity's status is not "ok", so its value is omitted from the sample exactly as the unit does.
+    // Appended last so vectors 0 and 2 keep their indices in both test suites.
+    name: "diagnostics-and-sensor-status",
+    secret: "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
+    deviceId: "00000000-0000-4000-8000-000000000001",
+    body: {
+      firmwareVersion: "0.6.0",
+      wifiSsid: "BFAR-Pond-1",
+      diag: { rssi: -67, uptimeS: 86400, resetReason: "power_on", freeHeap: 201344, queued: 3 },
+      sensors: { temperature: "ok", turbidity: "no_signal" },
       samples: [{ recordedAt: "2023-11-14T22:13:20Z", values: { temperature: 27.5 } }],
     },
   },
@@ -151,9 +182,26 @@ function checkValues(vectorName: string, values: unknown, path: string): void {
   }
 }
 
-function assertFirmwareRepresentable(input: (typeof inputs)[number]): void {
+const INT32_MIN = -2147483648;
+const INT32_MAX = 2147483647;
+
+function assertFirmwareRepresentable(input: VectorInput): void {
   for (const sample of input.body.samples) {
     checkValues(input.name, sample.values, "values");
+  }
+  const diag = input.body.diag;
+  if (diag) {
+    for (const [key, value] of Object.entries(diag)) {
+      if (typeof value !== "number") {
+        continue;
+      }
+      if (!Number.isInteger(value) || value < INT32_MIN || value > INT32_MAX) {
+        console.error(
+          `Vector "${input.name}": diag.${key} = ${value} is not an int32 integer. Every diag number must be one, so ArduinoJson and JSON.stringify emit identical signed bytes (and it fits the Postgres Int column). Nothing was written.`,
+        );
+        process.exit(1);
+      }
+    }
   }
 }
 

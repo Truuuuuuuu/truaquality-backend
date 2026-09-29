@@ -48,6 +48,63 @@ describe("ingestSchema", () => {
     });
   });
 
+  describe("diag", () => {
+    const diag = { rssi: -67, uptimeS: 86400, resetReason: "power_on", freeHeap: 201344, queued: 3 };
+    const withDiag = (overrides: Record<string, unknown>) => ({ diag: { ...diag, ...overrides }, samples: [sample] });
+
+    test("is optional (absent leaves no key)", () => {
+      const parsed = ingestSchema.parse({ samples: [sample] });
+      assert.equal("diag" in parsed, false);
+    });
+    test("a full valid diag is accepted", () => {
+      const parsed = ingestSchema.parse({ diag, samples: [sample] });
+      assert.deepEqual(parsed.diag, diag);
+    });
+    test("rssi -127 and 0 accepted; -128, 1 and -67.5 rejected", () => {
+      assert.equal(ingestSchema.safeParse(withDiag({ rssi: -127 })).success, true);
+      assert.equal(ingestSchema.safeParse(withDiag({ rssi: 0 })).success, true);
+      assert.equal(ingestSchema.safeParse(withDiag({ rssi: -128 })).success, false);
+      assert.equal(ingestSchema.safeParse(withDiag({ rssi: 1 })).success, false);
+      assert.equal(ingestSchema.safeParse(withDiag({ rssi: -67.5 })).success, false);
+    });
+    test("queued 120 accepted, 121 rejected", () => {
+      assert.equal(ingestSchema.safeParse(withDiag({ queued: 120 })).success, true);
+      assert.equal(ingestSchema.safeParse(withDiag({ queued: 121 })).success, false);
+    });
+    test("uptimeS -1 rejected", () => {
+      assert.equal(ingestSchema.safeParse(withDiag({ uptimeS: -1 })).success, false);
+    });
+    test("freeHeap 1.5 rejected", () => {
+      assert.equal(ingestSchema.safeParse(withDiag({ freeHeap: 1.5 })).success, false);
+    });
+    test("resetReason must be a known token", () => {
+      assert.equal(ingestSchema.safeParse(withDiag({ resetReason: "brownout" })).success, true);
+      assert.equal(ingestSchema.safeParse(withDiag({ resetReason: "reboot" })).success, false);
+    });
+  });
+
+  describe("sensors", () => {
+    test("is optional (absent leaves no key)", () => {
+      const parsed = ingestSchema.parse({ samples: [sample] });
+      assert.equal("sensors" in parsed, false);
+    });
+    test("turbidity is accepted before it is a known parameter", () => {
+      const parsed = ingestSchema.parse({ sensors: { temperature: "ok", turbidity: "no_signal" }, samples: [sample] });
+      assert.deepEqual(parsed.sensors, { temperature: "ok", turbidity: "no_signal" });
+    });
+    test("an unknown status is rejected", () => {
+      assert.equal(ingestSchema.safeParse({ sensors: { temperature: "broken" }, samples: [sample] }).success, false);
+    });
+    test("a malformed key is rejected", () => {
+      assert.equal(ingestSchema.safeParse({ sensors: { "Bad Key": "ok" }, samples: [sample] }).success, false);
+    });
+    test("8 keys accepted, 9 rejected", () => {
+      const keys = (n: number) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`sensor${i}`, "ok"]));
+      assert.equal(ingestSchema.safeParse({ sensors: keys(8), samples: [sample] }).success, true);
+      assert.equal(ingestSchema.safeParse({ sensors: keys(9), samples: [sample] }).success, false);
+    });
+  });
+
   describe("values", () => {
     test("a string value rejects the whole message", () => {
       const result = ingestSchema.safeParse({
