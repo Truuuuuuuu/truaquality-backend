@@ -2,7 +2,11 @@
 // hardware is installed. Readings it produces are synthetic — never point it at a production broker.
 //
 //   npm run simulate:devices -- --device <deviceId>:<deviceSecret> [--device ...] [--interval 60]
-//                               [--fault <parameter>=<status> ...]
+//                               [--fault <parameter>=<status> ...] [--no-turbidity]
+//
+// Each unit reports temperature then turbidity (0.1 NTU steps, drifting 0..60 NTU across the 25 NTU safe line so
+// a WARNING episode can be demoed). `--no-turbidity` drops the turbidity value and its sensors key entirely, like
+// firmware older than 0.4.0.
 //
 // Every message carries the firmware 0.6.0 extras in wire order — diag (integer rssi, uptimeS, resetReason,
 // freeHeap, queued) and a per-sensor status map — so the device diagnostics page can be demoed without hardware.
@@ -23,6 +27,7 @@ const { values } = parseArgs({
     interval: { type: "string", default: "60" },
     fault: { type: "string", multiple: true },
     url: { type: "string", default: process.env.MQTT_URL },
+    "no-turbidity": { type: "boolean", default: false },
   },
 });
 
@@ -30,7 +35,7 @@ const specs = values.device ?? [];
 const intervalMs = Number(values.interval) * 1000;
 if (specs.length === 0 || !values.url || !Number.isFinite(intervalMs) || intervalMs <= 0) {
   console.error(
-    "Usage: npm run simulate:devices -- --device <deviceId>:<deviceSecret> [--device ...] [--interval <seconds>] [--fault <parameter>=<status> ...]",
+    "Usage: npm run simulate:devices -- --device <deviceId>:<deviceSecret> [--device ...] [--interval <seconds>] [--fault <parameter>=<status> ...] [--no-turbidity]",
   );
   console.error("MQTT_URL, MQTT_USERNAME and MQTT_PASSWORD must be set in backend/.env.");
   process.exit(1);
@@ -46,11 +51,14 @@ for (const spec of values.fault ?? []) {
   faults.set(parameter, status as SensorStatus);
 }
 
-type Channel = { value: number; volatility: number; min: number; max: number };
+// `scale` is 1 / rounding step: 100 (0.01, the default) for temperature, 10 for turbidity to match the firmware's
+// NTU_ROUND_STEP of 0.1.
+type Channel = { value: number; volatility: number; min: number; max: number; scale?: number };
 
 function drift(channel: Channel) {
   channel.value = Math.min(channel.max, Math.max(channel.min, channel.value + (Math.random() - 0.5) * channel.volatility));
-  return Math.round(channel.value * 100) / 100;
+  const scale = channel.scale ?? 100;
+  return Math.round(channel.value * scale) / scale;
 }
 
 // Each simulated unit starts from slightly different conditions so ponds don't look identical.
@@ -66,7 +74,12 @@ const units = specs.map((spec) => {
     startedAt: Date.now(),
     rssi: { value: -60 - Math.random() * 10, volatility: 3, min: -80, max: -55 },
     channels: {
+      // Key order is signed bytes and mirrors the firmware: temperature first, then turbidity. min 0 keeps every
+      // turbidity value inside PARAMETER_BOUNDS (a negative one would be rejected at ingest).
       temperature: { value: 27 + Math.random() * 3, volatility: 0.35, min: 23, max: 34 },
+      ...(values["no-turbidity"]
+        ? {}
+        : { turbidity: { value: 5 + Math.random() * 10, volatility: 4, min: 0, max: 60, scale: 10 } }),
     } satisfies Record<string, Channel>,
   };
 });
