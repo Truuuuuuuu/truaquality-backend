@@ -2,6 +2,11 @@
 // (a disconnected probe, a parsing bug) — not the safe/critical ranges the dashboard colors by.
 export const PARAMETER_BOUNDS = {
   temperature: { min: -5, max: 60 },
+  // The firmware clamps NTU to 0 at its clear-water reference and to 3000 where the vendor curve saturates, so
+  // 0..3000 are all legitimate readings — including exactly 3000, because the firmware reports a sensor fault
+  // by omitting the value, never by sending the ceiling. 4000 leaves headroom for a bench refit of the curve;
+  // only negative or absurd values are garbage.
+  turbidity: { min: 0, max: 4000 },
 } as const;
 
 export type ParameterId = keyof typeof PARAMETER_BOUNDS;
@@ -20,11 +25,29 @@ export type Threshold = { safeMin: number; safeMax: number; criticalMin: number;
 // This used to be one global table, which made every freshwater pond permanently CRITICAL on the (since
 // removed) salinity parameter: fresh water sits near 0 ppt, well under the brackish critical minimum, so the
 // first reading opened an alert that could never resolve. No current parameter differs by pond type, so every
-// profile is SHARED for now — a parameter that does differ overrides it per profile.
+// profile is SHARED for now — a parameter that does differ overrides it per profile. Turbidity is SHARED on
+// purpose (Phase 4 D-05): no source gives pond-type-specific NTU numbers.
 export type ThresholdProfile = "FRESHWATER" | "BRACKISH" | "SALTWATER" | "UNSET";
+
+// PENDING BFAR. BFAR will supply the turbidity critical line; until then this equals the firmware's 3000 NTU
+// ceiling, so with severityFor's strict ">" no field reading is ever CRITICAL (turbidity is warning-only), while
+// tests can still drive escalation with an in-bounds value above it. Replace it with the BFAR figure and its
+// citation — never with a number converted from Secchi depth.
+export const TURBIDITY_CRITICAL_MAX_NTU = 3000;
 
 const SHARED: Record<ParameterId, Threshold> = {
   temperature: { safeMin: 26, safeMax: 31, criticalMin: 24, criticalMax: 33 },
+  // Turbidity (NTU) — PROVISIONAL, pending BFAR review.
+  // - safeMax 25 NTU ("below 25 NTU is normal, above is above-normal"): [BFAR document — citation to be supplied].
+  //   NTU-native; not derived from Secchi depth.
+  // - criticalMax: PENDING BFAR — see TURBIDITY_CRITICAL_MAX_NTU (warning-only in the field until supplied).
+  // - No low-side band (safeMin = criticalMin = 0 = bounds.min): clear water reads near 0 NTU and must never
+  //   alert (ALRT-03); a low band above 0 would open an episode that could never resolve, as salinity once did.
+  // - BFAR's ~0.5 m Secchi transparency guidance is a separate reference for pond managers, not a conversion
+  //   source: no NTU number here comes from Secchi depth.
+  // - Sensor caveat: NTU is a vendor-curve estimate (no reference turbidimeter yet); the bench noise-floor check
+  //   against 25 NTU is pending (see .planning/phases/04-backend-turbidity-ingest-alerts/04-TURBIDITY-THRESHOLDS.md).
+  turbidity: { safeMin: 0, safeMax: 25, criticalMin: 0, criticalMax: TURBIDITY_CRITICAL_MAX_NTU },
 };
 
 // Safe/critical ranges that raise alerts (lib/alerts.ts). Unlike PARAMETER_BOUNDS, a value outside these is a
@@ -64,11 +87,16 @@ export function severityFor(
 
 // Display metadata for report-facing output (currently just the .xlsx export in routes/ponds.ts) — the
 // dashboard itself is rendered by the frontend, which keeps its own copy in src/lib/parameters.ts. Keep the
-// label/unit/precision here and there in sync; a parameter id must exist in both.
+// label/unit/precision here and there in sync; a parameter id must exist in both (turbidity reaches the
+// frontend PARAMETERS in Phase 6 and must match this entry).
+//
+// precision must stay >= 1: readingsExport.numFmtFor builds `0.` followed by `precision` zeros, so 0 would emit
+// a malformed format with a stray decimal point. Turbidity uses 1, matching the firmware's 0.1 NTU rounding.
 //
 // The real "°" is safe here: it's written into an Excel cell's number format inside a proper .xlsx (OOXML)
 // file, not raw bytes in a plain-text CSV — the earlier "¬∞C" mojibake was specifically a CSV-in-Excel
 // encoding problem (some Excel builds guessed Mac OS Roman instead of UTF-8) that doesn't exist for .xlsx.
 export const PARAMETER_DISPLAY: Record<ParameterId, { label: string; unit: string; precision: number }> = {
   temperature: { label: "Temperature", unit: "°C", precision: 1 },
+  turbidity: { label: "Turbidity", unit: "NTU", precision: 1 },
 };
