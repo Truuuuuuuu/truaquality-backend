@@ -137,6 +137,19 @@ describe("turbidity (NTU) — BFAR safeMax 25, criticalMax PENDING BFAR", () => 
     });
   }
 
+  // The pending marker changes only what the dashboard draws, never the judgement: an in-bounds value above the
+  // placeholder (possible after a bench refit of the curve) is still CRITICAL, so the frontend chart colors that
+  // stretch red and shows the real number instead of "≥ 3000" (Phase 6 review WR-03).
+  test("WR-03: every in-bounds value above the pending placeholder stays CRITICAL", () => {
+    assert.equal(TB.criticalPending, true);
+    for (const value of [TB.criticalMax + 0.1, 3500, PARAMETER_BOUNDS.turbidity.max]) {
+      assert.ok(value <= PARAMETER_BOUNDS.turbidity.max, `${value} out of bounds`);
+      for (const pondType of POND_TYPES) {
+        assert.equal(severityFor("turbidity", value, pondType), "CRITICAL", `${value} pondType ${pondType}`);
+      }
+    }
+  });
+
   test("ALRT-03: no accepted value can be low for any profile", () => {
     for (const profile of PROFILES) {
       const t = PARAMETER_THRESHOLDS[profile].turbidity;
