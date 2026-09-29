@@ -11,14 +11,14 @@ import {
 import { PARAMETER_BOUNDS, thresholdsFor } from "./parameters.ts";
 
 // Characterization of today's alert episode state machine (temperature, plus table-derived turbidity cases). Pure: no DB, no env, no wall
-// clock. Temperature bands: safe 26-31, critical 24-33 (strict < / > on both edges).
+// clock. Temperature bands (BFAR): safe 20-30, critical 15-35.5 (strict < / > on both edges).
 const T = new Date("2030-01-01T00:00:00Z");
 const MIN_MS = 60 * 1000;
 const at = (offsetMs: number) => new Date(T.getTime() + offsetMs);
 
 const episode = (over: Partial<OpenEpisode> = {}): OpenEpisode => ({
   severity: "WARNING",
-  lastValue: 25,
+  lastValue: 18,
   lastRecordedAt: T,
   nominalSince: null,
   ...over,
@@ -33,21 +33,21 @@ describe("decideAlertStep — no open episode", () => {
   });
 
   test("warning-range reading opens a WARNING episode", () => {
-    assert.deepEqual(step(null, 25), { kind: "open", severity: "WARNING" });
+    assert.deepEqual(step(null, 18), { kind: "open", severity: "WARNING" });
   });
 
   test("critical-range reading opens a CRITICAL episode", () => {
-    assert.deepEqual(step(null, 23), { kind: "open", severity: "CRITICAL" });
+    assert.deepEqual(step(null, 14), { kind: "open", severity: "CRITICAL" });
   });
 });
 
 describe("decideAlertStep — stale", () => {
   test("recordedAt equal to lastRecordedAt is stale", () => {
-    assert.deepEqual(step(episode(), 23, T), { kind: "stale" });
+    assert.deepEqual(step(episode(), 14, T), { kind: "stale" });
   });
 
   test("recordedAt earlier than lastRecordedAt is stale", () => {
-    assert.deepEqual(step(episode(), 23, at(-1)), { kind: "stale" });
+    assert.deepEqual(step(episode(), 14, at(-1)), { kind: "stale" });
   });
 
   test("stale wins even for an in-range reading", () => {
@@ -57,7 +57,7 @@ describe("decideAlertStep — stale", () => {
 
 describe("decideAlertStep — abnormal", () => {
   test("WARNING episode, warning -> critical: escalated and worsened", () => {
-    assert.deepEqual(step(episode({ severity: "WARNING", lastValue: 25 }), 23), {
+    assert.deepEqual(step(episode({ severity: "WARNING", lastValue: 18 }), 14), {
       kind: "abnormal",
       severity: "CRITICAL",
       escalated: true,
@@ -66,7 +66,7 @@ describe("decideAlertStep — abnormal", () => {
   });
 
   test("CRITICAL episode, critical -> critical: neither escalated nor worsened", () => {
-    assert.deepEqual(step(episode({ severity: "CRITICAL", lastValue: 23 }), 22), {
+    assert.deepEqual(step(episode({ severity: "CRITICAL", lastValue: 14 }), 13), {
       kind: "abnormal",
       severity: "CRITICAL",
       escalated: false,
@@ -75,7 +75,7 @@ describe("decideAlertStep — abnormal", () => {
   });
 
   test("CRITICAL episode, nominal -> warning: worsened but not escalated", () => {
-    assert.deepEqual(step(episode({ severity: "CRITICAL", lastValue: 28 }), 25), {
+    assert.deepEqual(step(episode({ severity: "CRITICAL", lastValue: 28 }), 18), {
       kind: "abnormal",
       severity: "WARNING",
       escalated: false,
@@ -84,7 +84,7 @@ describe("decideAlertStep — abnormal", () => {
   });
 
   test("CRITICAL episode, nominal -> critical: worsened but not escalated", () => {
-    assert.deepEqual(step(episode({ severity: "CRITICAL", lastValue: 28 }), 23), {
+    assert.deepEqual(step(episode({ severity: "CRITICAL", lastValue: 28 }), 14), {
       kind: "abnormal",
       severity: "CRITICAL",
       escalated: false,
@@ -93,7 +93,7 @@ describe("decideAlertStep — abnormal", () => {
   });
 
   test("CRITICAL episode, critical -> warning: a step up, neither escalated nor worsened", () => {
-    assert.deepEqual(step(episode({ severity: "CRITICAL", lastValue: 23 }), 25), {
+    assert.deepEqual(step(episode({ severity: "CRITICAL", lastValue: 14 }), 18), {
       kind: "abnormal",
       severity: "WARNING",
       escalated: false,
@@ -169,11 +169,11 @@ describe("decideAlertStep — pond type", () => {
   const pondTypes = [null, undefined, "LAKE", "FRESHWATER", "BRACKISH", "SALTWATER"] as const;
   const cases: Array<[OpenEpisode | null, number, Date]> = [
     [null, 28, at(MIN_MS)],
-    [null, 25, at(MIN_MS)],
-    [null, 23, at(MIN_MS)],
-    [episode(), 23, T],
-    [episode({ severity: "WARNING", lastValue: 25 }), 23, at(MIN_MS)],
-    [episode({ severity: "CRITICAL", lastValue: 28 }), 25, at(MIN_MS)],
+    [null, 18, at(MIN_MS)],
+    [null, 14, at(MIN_MS)],
+    [episode(), 14, T],
+    [episode({ severity: "WARNING", lastValue: 18 }), 14, at(MIN_MS)],
+    [episode({ severity: "CRITICAL", lastValue: 28 }), 18, at(MIN_MS)],
     [episode({ nominalSince: T }), 28, at(ALERT_RECOVERY_MS)],
     [episode({ nominalSince: T }), 28, at(ALERT_RECOVERY_MS - 1)],
   ];

@@ -8,7 +8,7 @@ import { thresholdsFor, type ParameterId } from "./parameters.ts";
 
 // Shell-trace characterization of evaluatePondAlerts (and, in Part B, the full ingest -> alerts -> notify
 // path) against the in-memory Prisma fake (TEST-01). Written against the UNMODIFIED alerts.ts before the pure
-// core is extracted. Temperature thresholds (all profiles SHARED): safe 26..31, critical 24..33. Turbidity
+// core is extracted. Temperature thresholds (all profiles SHARED): safe 20..30, critical 15..35.5. Turbidity
 // cases use values derived from thresholdsFor(null).turbidity, never a literal critical number.
 // Every timestamp derives from T0 — never the wall clock.
 
@@ -39,7 +39,7 @@ function seedAlert(fake: Fake, overrides: Partial<FakeAlert>): FakeAlert {
     parameter: "temperature",
     severity: "WARNING",
     openedAt: minute(-10),
-    lastValue: 25,
+    lastValue: 18,
     lastRecordedAt: minute(0),
     nominalSince: null,
     resolvedAt: null,
@@ -50,7 +50,7 @@ function seedAlert(fake: Fake, overrides: Partial<FakeAlert>): FakeAlert {
 }
 
 function seedNotification(fake: Fake, alertId: string, recordedAt: Date) {
-  fake.notifications.push({ profileId: "p1", alertId, kind: "ALERT_OPENED", severity: "WARNING", value: 25, recordedAt });
+  fake.notifications.push({ profileId: "p1", alertId, kind: "ALERT_OPENED", severity: "WARNING", value: 18, recordedAt });
 }
 
 const evaluate = (parameters: ParameterId[] = ["temperature"]) => evaluatePondAlerts("pond-1", parameters);
@@ -77,7 +77,7 @@ test("no open alert + nominal value: nothing created, nothing notified", async (
 
 test("no open alert + warning value: opens WARNING and notifies ALERT_OPENED", async (t) => {
   const fake = setup(t);
-  seedReading(fake, 25, minute(0));
+  seedReading(fake, 18, minute(0));
 
   await evaluate();
 
@@ -89,14 +89,14 @@ test("no open alert + warning value: opens WARNING and notifies ALERT_OPENED", a
       parameter: "temperature",
       severity: "WARNING",
       openedAt: minute(0),
-      lastValue: 25,
+      lastValue: 18,
       lastRecordedAt: minute(0),
       nominalSince: null,
       resolvedAt: null,
     },
   ]);
   assert.deepEqual(fake.notifications, [
-    { profileId: "p1", alertId: "alert-1", kind: "ALERT_OPENED", severity: "WARNING", value: 25, recordedAt: minute(0) },
+    { profileId: "p1", alertId: "alert-1", kind: "ALERT_OPENED", severity: "WARNING", value: 18, recordedAt: minute(0) },
   ]);
   assert.deepEqual(fake.calls.find((c) => c.op === "tx.profile.findMany")?.args, {
     where: { status: "ACTIVE" },
@@ -106,21 +106,21 @@ test("no open alert + warning value: opens WARNING and notifies ALERT_OPENED", a
 
 test("no open alert + critical value: opens CRITICAL and notifies ALERT_OPENED CRITICAL", async (t) => {
   const fake = setup(t);
-  seedReading(fake, 23, minute(0));
+  seedReading(fake, 14, minute(0));
 
   await evaluate();
 
   assert.equal(fake.alerts.length, 1);
   assert.equal(fake.alerts[0].severity, "CRITICAL");
   assert.deepEqual(fake.notifications, [
-    { profileId: "p1", alertId: "alert-1", kind: "ALERT_OPENED", severity: "CRITICAL", value: 23, recordedAt: minute(0) },
+    { profileId: "p1", alertId: "alert-1", kind: "ALERT_OPENED", severity: "CRITICAL", value: 14, recordedAt: minute(0) },
   ]);
 });
 
 test("stale: latest reading not newer than the open alert's lastRecordedAt is skipped", async (t) => {
   const fake = setup(t);
-  seedAlert(fake, { severity: "WARNING", lastValue: 25, lastRecordedAt: minute(0) });
-  seedReading(fake, 23, minute(0));
+  seedAlert(fake, { severity: "WARNING", lastValue: 18, lastRecordedAt: minute(0) });
+  seedReading(fake, 14, minute(0));
 
   await evaluate();
 
@@ -131,16 +131,16 @@ test("stale: latest reading not newer than the open alert's lastRecordedAt is sk
 
 test("WARNING -> critical value: escalates immediately with ALERT_ESCALATED, no renotify lookup", async (t) => {
   const fake = setup(t);
-  seedAlert(fake, { severity: "WARNING", lastValue: 25, lastRecordedAt: minute(0) });
+  seedAlert(fake, { severity: "WARNING", lastValue: 18, lastRecordedAt: minute(0) });
   seedNotification(fake, "alert-open", minute(0));
-  seedReading(fake, 23, minute(1));
+  seedReading(fake, 14, minute(1));
 
   await evaluate();
 
   assert.deepEqual(fake.ops(), [...PREFIX, "tx.alert.update", "tx.profile.findMany", "tx.notification.createMany"]);
   assert.ok(!fake.ops().includes("tx.notification.findFirst"));
   assert.deepEqual(argsOf(fake, "tx.alert.update")[0].data, {
-    lastValue: 23,
+    lastValue: 14,
     lastRecordedAt: minute(1),
     nominalSince: null,
     severity: "CRITICAL",
@@ -151,21 +151,21 @@ test("WARNING -> critical value: escalates immediately with ALERT_ESCALATED, no 
     alertId: "alert-open",
     kind: "ALERT_ESCALATED",
     severity: "CRITICAL",
-    value: 23,
+    value: 14,
     recordedAt: minute(1),
   });
 });
 
 test("CRITICAL stays critical: update only, no notification, no renotify lookup", async (t) => {
   const fake = setup(t);
-  seedAlert(fake, { severity: "CRITICAL", lastValue: 23, lastRecordedAt: minute(0) });
-  seedReading(fake, 22, minute(1));
+  seedAlert(fake, { severity: "CRITICAL", lastValue: 14, lastRecordedAt: minute(0) });
+  seedReading(fake, 13, minute(1));
 
   await evaluate();
 
   assert.deepEqual(fake.ops(), [...PREFIX, "tx.alert.update"]);
   assert.deepEqual(argsOf(fake, "tx.alert.update")[0].data, {
-    lastValue: 22,
+    lastValue: 13,
     lastRecordedAt: minute(1),
     nominalSince: null,
   });
@@ -176,7 +176,7 @@ test("re-worsening after 30 min since last notification: renotifies ALERT_OPENED
   const fake = setup(t);
   seedAlert(fake, { severity: "CRITICAL", lastValue: 28, lastRecordedAt: minute(29), nominalSince: minute(25) });
   seedNotification(fake, "alert-open", minute(0));
-  seedReading(fake, 25, minute(30));
+  seedReading(fake, 18, minute(30));
 
   await evaluate();
 
@@ -189,7 +189,7 @@ test("re-worsening after 30 min since last notification: renotifies ALERT_OPENED
   ]);
   // Any abnormal reading clears nominalSince; severity is the episode's worst, so it is not written back down.
   assert.deepEqual(argsOf(fake, "tx.alert.update")[0].data, {
-    lastValue: 25,
+    lastValue: 18,
     lastRecordedAt: minute(30),
     nominalSince: null,
   });
@@ -200,7 +200,7 @@ test("re-worsening after 30 min since last notification: renotifies ALERT_OPENED
     alertId: "alert-open",
     kind: "ALERT_OPENED",
     severity: "WARNING",
-    value: 25,
+    value: 18,
     recordedAt: minute(30),
   });
 });
@@ -209,7 +209,7 @@ test("re-worsening just under 30 min since last notification: looked up, not ren
   const fake = setup(t);
   seedAlert(fake, { severity: "CRITICAL", lastValue: 28, lastRecordedAt: minute(29), nominalSince: minute(25) });
   seedNotification(fake, "alert-open", minute(0));
-  seedReading(fake, 25, at(30 * MIN - 1));
+  seedReading(fake, 18, at(30 * MIN - 1));
 
   await evaluate();
 
@@ -226,7 +226,7 @@ test("a null-recordedAt notification for the episode is excluded from the renoti
   // "has an alertId" to "has a recordedAt". Postgres orders DESC NULLS FIRST, so an unfiltered query
   // would return THIS row, not the minute-0 one.
   fake.notifications.push({ profileId: "p1", alertId: "alert-open", kind: "DEVICE_OFFLINE", recordedAt: null });
-  seedReading(fake, 25, at(30 * MIN - 1));
+  seedReading(fake, 18, at(30 * MIN - 1));
 
   await evaluate();
 
@@ -245,7 +245,7 @@ test("re-worsening to an already-reached CRITICAL: renotifies as ALERT_OPENED, n
   const fake = setup(t);
   seedAlert(fake, { severity: "CRITICAL", lastValue: 28, lastRecordedAt: minute(29), nominalSince: minute(25) });
   seedNotification(fake, "alert-open", minute(0));
-  seedReading(fake, 23, minute(30));
+  seedReading(fake, 14, minute(30));
 
   await evaluate();
 
@@ -255,14 +255,14 @@ test("re-worsening to an already-reached CRITICAL: renotifies as ALERT_OPENED, n
     alertId: "alert-open",
     kind: "ALERT_OPENED",
     severity: "CRITICAL",
-    value: 23,
+    value: 14,
     recordedAt: minute(30),
   });
 });
 
 test("first nominal reading starts the recovery clock without resolving", async (t) => {
   const fake = setup(t);
-  seedAlert(fake, { severity: "WARNING", lastValue: 25, lastRecordedAt: minute(0), nominalSince: null });
+  seedAlert(fake, { severity: "WARNING", lastValue: 18, lastRecordedAt: minute(0), nominalSince: null });
   seedReading(fake, 28, minute(1));
 
   await evaluate();
@@ -318,14 +318,14 @@ test("nominal for just under 10 min does not resolve", async (t) => {
 
 test("flap nominal -> abnormal -> nominal restarts the recovery clock", async (t) => {
   const fake = setup(t);
-  seedAlert(fake, { severity: "WARNING", lastValue: 25, lastRecordedAt: minute(0), nominalSince: null });
+  seedAlert(fake, { severity: "WARNING", lastValue: 18, lastRecordedAt: minute(0), nominalSince: null });
   seedNotification(fake, "alert-open", minute(0));
 
   seedReading(fake, 28, minute(1));
   await evaluate();
   assert.deepEqual(fake.alerts[0].nominalSince, minute(1));
 
-  seedReading(fake, 25, minute(2));
+  seedReading(fake, 18, minute(2));
   await evaluate();
   assert.equal(fake.alerts[0].nominalSince, null);
 
@@ -350,7 +350,7 @@ test("flap nominal -> abnormal -> nominal restarts the recovery clock", async (t
 
 test("no active profiles: recipients looked up, no notification rows written", async (t) => {
   const fake = setup(t, { activeProfileIds: [] });
-  seedReading(fake, 25, minute(0));
+  seedReading(fake, 18, minute(0));
 
   await evaluate();
 
@@ -367,7 +367,7 @@ test("pondType BRACKISH and null produce identical outcomes today", async (t) =>
   for (const pondType of ["BRACKISH", null]) {
     await t.test(`pondType ${pondType}`, async (st) => {
       const fake = setup(st, { pondType });
-      seedReading(fake, 25, minute(0));
+      seedReading(fake, 18, minute(0));
       await evaluate();
       outcomes.push({ ops: fake.ops(), alerts: fake.alerts, notifications: fake.notifications });
     });
@@ -382,7 +382,7 @@ test("two concurrent evaluations open exactly one episode (the advisory lock ser
   // mutex and refuses a second open alert for the same (pond, parameter), so deleting the lock line
   // fails this test instead of leaving the suite green.
   const fake = setup(t);
-  seedReading(fake, 25, minute(0));
+  seedReading(fake, 18, minute(0));
 
   await Promise.all([evaluate(), evaluate()]);
 
@@ -415,7 +415,7 @@ test("pond.findUnique runs exactly once per evaluatePondAlerts call, one transac
 // Part B — simulator-shaped minute-by-minute sequence through the real ingestSamples
 // ---------------------------------------------------------------------------------------------------------
 
-test("end-to-end: 28, 25, 23, then 11 minutes of 28 -> one episode opened, escalated, resolved", async (t) => {
+test("end-to-end: 28, 18, 14, then 11 minutes of 28 -> one episode opened, escalated, resolved", async (t) => {
   const fake = setup(t);
   const device = {
     id: DEVICE_ID,
@@ -434,7 +434,7 @@ test("end-to-end: 28, 25, 23, then 11 minutes of 28 -> one episode opened, escal
     updatedAt: at(-2 * DAY),
   } as Device;
 
-  const values = [28, 25, 23, ...Array.from({ length: 11 }, () => 28)];
+  const values = [28, 18, 14, ...Array.from({ length: 11 }, () => 28)];
   for (const [n, value] of values.entries()) {
     const result = await ingestSamples(
       device,
@@ -458,8 +458,8 @@ test("end-to-end: 28, 25, 23, then 11 minutes of 28 -> one episode opened, escal
   assert.deepEqual(
     fake.notifications.map((n) => [n.severity, n.value, n.recordedAt, n.profileId, n.alertId]),
     [
-      ["WARNING", 25, minute(1), "p1", "alert-1"],
-      ["CRITICAL", 23, minute(2), "p1", "alert-1"],
+      ["WARNING", 18, minute(1), "p1", "alert-1"],
+      ["CRITICAL", 14, minute(2), "p1", "alert-1"],
       ["CRITICAL", 28, minute(13), "p1", "alert-1"],
     ],
   );

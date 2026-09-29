@@ -94,7 +94,9 @@ const units = specs.map((spec) => {
     channels: {
       // Key order is signed bytes and mirrors the firmware: temperature first, then turbidity. min 0 keeps every
       // turbidity value inside PARAMETER_BOUNDS (a negative one would be rejected at ingest).
-      temperature: { value: 27 + Math.random() * 3, volatility: 0.35, min: 23, max: 34 },
+      // 18..37 straddles the BFAR safe lines (20/30 °C) and the high critical line (35.5 °C) so WARNING and
+      // CRITICAL temperature episodes can be demoed.
+      temperature: { value: 27 + Math.random() * 3, volatility: 0.35, min: 18, max: 37 },
       ...(values["no-turbidity"]
         ? {}
         : {

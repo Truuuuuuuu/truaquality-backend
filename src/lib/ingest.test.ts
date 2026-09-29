@@ -133,7 +133,7 @@ test("alert evaluation failure is logged and does not fail the ingest", async (t
   fake.install(t);
   const errorMock = t.mock.method(console, "error", () => {});
 
-  const result = await ingestSamples(device(), simulatorBatch(25, minute(0)), minute(0));
+  const result = await ingestSamples(device(), simulatorBatch(18, minute(0)), minute(0));
 
   assert.deepEqual(result, { status: "stored", accepted: 1, duplicates: 0, rejected: [] });
   assert.equal(errorMock.mock.callCount(), 1);
@@ -151,7 +151,7 @@ test("a failure INSIDE the alert transaction is logged, and its partial writes a
   fake.install(t);
   const errorMock = t.mock.method(console, "error", () => {});
 
-  const result = await ingestSamples(device(), simulatorBatch(25, minute(0)), minute(0));
+  const result = await ingestSamples(device(), simulatorBatch(18, minute(0)), minute(0));
 
   assert.deepEqual(result, { status: "stored", accepted: 1, duplicates: 0, rejected: [] });
   assert.equal(errorMock.mock.callCount(), 1);

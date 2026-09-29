@@ -38,17 +38,17 @@ describe("thresholdProfileFor", () => {
   });
 });
 
-describe("severityFor — temperature edges (safe 26-31, critical 24-33)", () => {
+describe("severityFor — temperature edges (BFAR: safe 20-30, critical 15-35.5)", () => {
   const cases: Array<[number, "WARNING" | "CRITICAL" | null]> = [
-    [23.99, "CRITICAL"],
-    [24, "WARNING"],
-    [25.99, "WARNING"],
-    [26, null],
+    [14.99, "CRITICAL"],
+    [15, "WARNING"],
+    [19.99, "WARNING"],
+    [20, null],
     [28, null],
-    [31, null],
-    [31.01, "WARNING"],
-    [33, "WARNING"],
-    [33.01, "CRITICAL"],
+    [30, null],
+    [30.01, "WARNING"],
+    [35.5, "WARNING"],
+    [35.51, "CRITICAL"],
   ];
   for (const [value, expected] of cases) {
     test(`${value} -> ${expected}`, () => {
