@@ -2,11 +2,12 @@
 // hardware is installed. Readings it produces are synthetic — never point it at a production broker.
 //
 //   npm run simulate:devices -- --device <deviceId>:<deviceSecret> [--device ...] [--interval 60]
-//                               [--fault <parameter>=<status> ...] [--no-turbidity]
+//                               [--fault <parameter>=<status> ...] [--no-turbidity] [--turbidity <ntu>]
 //
 // Each unit reports temperature then turbidity (0.1 NTU steps, drifting 0..60 NTU across the 25 NTU safe line so
 // a WARNING episode can be demoed). `--no-turbidity` drops the turbidity value and its sensors key entirely, like
-// firmware older than 0.4.0.
+// firmware older than 0.4.0. `--turbidity <ntu>` holds turbidity at a fixed NTU (0..3000, the firmware's clamp
+// range) instead of drifting, to demo a spike (e.g. 400) or the 3000 NTU sensor ceiling.
 //
 // Every message carries the firmware 0.6.0 extras in wire order — diag (integer rssi, uptimeS, resetReason,
 // freeHeap, queued) and a per-sensor status map — so the device diagnostics page can be demoed without hardware.
@@ -28,6 +29,7 @@ const { values } = parseArgs({
     fault: { type: "string", multiple: true },
     url: { type: "string", default: process.env.MQTT_URL },
     "no-turbidity": { type: "boolean", default: false },
+    turbidity: { type: "string" },
   },
 });
 
@@ -35,10 +37,26 @@ const specs = values.device ?? [];
 const intervalMs = Number(values.interval) * 1000;
 if (specs.length === 0 || !values.url || !Number.isFinite(intervalMs) || intervalMs <= 0) {
   console.error(
-    "Usage: npm run simulate:devices -- --device <deviceId>:<deviceSecret> [--device ...] [--interval <seconds>] [--fault <parameter>=<status> ...] [--no-turbidity]",
+    "Usage: npm run simulate:devices -- --device <deviceId>:<deviceSecret> [--device ...] [--interval <seconds>] [--fault <parameter>=<status> ...] [--no-turbidity] [--turbidity <ntu>]",
   );
+  console.error("--turbidity <ntu> holds turbidity at a fixed NTU (0..3000) to demo a spike or the 3000 NTU ceiling.");
   console.error("MQTT_URL, MQTT_USERNAME and MQTT_PASSWORD must be set in backend/.env.");
   process.exit(1);
+}
+
+// 0..3000 is the firmware's own clamp range (Phase 3 D-02), so a pinned value is always one a real unit could send.
+let pinnedTurbidity: number | undefined;
+if (values.turbidity !== undefined) {
+  if (values["no-turbidity"]) {
+    console.error("--turbidity cannot be combined with --no-turbidity.");
+    process.exit(1);
+  }
+  const ntu = Number(values.turbidity);
+  if (values.turbidity.trim() === "" || !Number.isFinite(ntu) || ntu < 0 || ntu > 3000) {
+    console.error(`Expected --turbidity <ntu> with ntu between 0 and 3000; got "${values.turbidity}"`);
+    process.exit(1);
+  }
+  pinnedTurbidity = ntu;
 }
 
 const faults = new Map<string, SensorStatus>();
@@ -79,7 +97,12 @@ const units = specs.map((spec) => {
       temperature: { value: 27 + Math.random() * 3, volatility: 0.35, min: 23, max: 34 },
       ...(values["no-turbidity"]
         ? {}
-        : { turbidity: { value: 5 + Math.random() * 10, volatility: 4, min: 0, max: 60, scale: 10 } }),
+        : {
+            turbidity:
+              pinnedTurbidity === undefined
+                ? { value: 5 + Math.random() * 10, volatility: 4, min: 0, max: 60, scale: 10 }
+                : { value: pinnedTurbidity, volatility: 0, min: pinnedTurbidity, max: pinnedTurbidity, scale: 10 },
+          }),
     } satisfies Record<string, Channel>,
   };
 });

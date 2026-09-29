@@ -180,7 +180,7 @@ resolution of `tsc`/`tsx`/`ts-node`:
   3. If the DB write fails, delete the Supabase user so no orphaned login remains.
   The invite link lands on `INVITE_REDIRECT_URL` (a frontend page where the user sets a password). That URL
   must be in Supabase's allowed redirect URLs.
-- `npm run simulate:devices -- --device <deviceId>:<deviceSecret> [--device ...] [--interval 60] [--no-turbidity]`
+- `npm run simulate:devices -- --device <deviceId>:<deviceSecret> [--device ...] [--interval 60] [--no-turbidity] [--turbidity <ntu>]`
   (`scripts/simulate-devices.ts`) is **dev only**: it publishes synthetic, correctly signed readings to the
   MQTT broker as if it were ESP32 units, so the multi-pond UI can be tested before hardware is installed. Never
   point it at a production broker. Every message carries integer `diag` and a `sensors` map like firmware 0.6.0;
@@ -188,6 +188,8 @@ resolution of `tsc`/`tsx`/`ts-node`:
   that status and omits its value, to demo a SENSOR_FAULT (restart without it to see SENSOR_RECOVERED). Each unit
   reports temperature then turbidity (0.1 NTU steps, drifting 0..60 NTU across the 25 NTU safe line to demo a
   WARNING); `--no-turbidity` drops turbidity from values and `sensors`, mimicking firmware older than 0.4.0.
+  `--turbidity <ntu>` pins turbidity to a fixed NTU (validated 0..3000, the firmware clamp range; refused with
+  `--no-turbidity`) to demo a spike (e.g. 400) or the 3000 NTU sensor ceiling.
 - `npm run purge:parameters -- --parameter <id> [--parameter ...] [--apply]` (`scripts/purge-parameters.ts`)
   deletes the stored readings, hourly summaries, and alerts (plus their notifications) of a parameter that has
   been removed from `PARAMETER_BOUNDS`. Dry run unless `--apply`; refuses live parameter ids.
@@ -303,7 +305,9 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
     streams a formatted `.xlsx` workbook of either (via `exceljs`'s streaming `WorkbookWriter`, so a large
     export doesn't sit in memory), for reporting outside the app — one column per parameter, one row per
     timestamp, bordered header/data cells, and real numeric cells carrying a custom number format that shows
-    the unit (e.g. `27.6 °C`) without turning the value into text.
+    the unit (e.g. `27.6 °C`) without turning the value into text. Column headers come from
+    `PARAMETER_DISPLAY[id].exportHeader` (turbidity: "Turbidity (NTU, approx.)"); the "Parameter" report row
+    keeps the plain `label`.
 - `DeviceEvent`: the durable per-device timeline (`OFFLINE | ONLINE | REBOOT | SENSOR_FAULT | SENSOR_RECOVERED |
   FIRMWARE_CHANGED`, optional `parameter`/`detail`), cascade-deleted with its device, RLS-enabled like every table.
   Notifications can't serve this: they're per user and deleted with the account.
@@ -343,6 +347,11 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
   and judge with `severityFor(parameter, value, pondType)`.
   - **The frontend keeps no copy.** `GET /ponds` and `GET /ponds/:id` return a resolved `thresholds` map on
     each pond, next to `latest`, so the board colors a reading with the same numbers that raised its alert.
+    A resolved threshold may carry `criticalPending: true` (turbidity today: critical line pending BFAR); the
+    frontend then draws no critical band and keeps its axis off the placeholder. `severityFor` ignores it.
+  - Each pond in `GET /ponds` / `GET /ponds/:id` also carries a top-level `sensorStatus` map: the assigned unit's
+    latest per-sensor status tokens (strings only, via `reportedStatuses` in `src/lib/devices.ts`; `{}` with no
+    device or no report). The raw `Device.sensorStatus` Json is stripped from `pond.device`.
     `GET /notifications` likewise computes each row's `direction` (`"low"`/`"high"`) server-side. The one
     exception is `SIGNED_OUT_THRESHOLDS` in the frontend, illustrative bands for the signed-out range key on
     the auth pages, which have no pond and no token; nothing that judges a real reading may use it.
