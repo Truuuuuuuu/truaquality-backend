@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { z } from "zod";
 import { Prisma } from "../generated/prisma/client.ts";
-import { deviceSummarySelect } from "../lib/devices.ts";
+import { deviceSummarySelect, reportedStatuses } from "../lib/devices.ts";
 import { PARAMETER_IDS, thresholdsFor } from "../lib/parameters.ts";
 import { prisma } from "../lib/prisma.ts";
 import { rawRetentionDays } from "../lib/readingRollup.ts";
@@ -59,21 +59,36 @@ async function latestReadingsByPond(pondIds: string[]) {
   return byPond;
 }
 
+// The pond payloads select the unit's raw sensorStatus column alongside its summary so the board can show why a
+// single probe went silent (the unit's own last word on each sensor) on its normal 30 s poll, without a per-pond
+// diagnostics fetch. The raw Json never reaches the client: it is stripped off `device` and re-exposed as a
+// top-level `sensorStatus` of status tokens only (ok, uncalibrated, no_signal, over_range, ...). A sensor absent
+// from the map was never reported by this unit; a pond with no device, or a unit that never reported, gets {}.
+const pondDeviceSelect = { ...deviceSummarySelect, sensorStatus: true } satisfies Prisma.DeviceSelect;
+
+type PondWithDevice = Prisma.PondGetPayload<{ include: { device: { select: typeof pondDeviceSelect } } }>;
+
+function toPondPayload(pond: PondWithDevice, latest: Record<string, LatestReading>) {
+  const { device, ...rest } = pond;
+  let summary: Omit<NonNullable<PondWithDevice["device"]>, "sensorStatus"> | null = null;
+  let sensorStatus: Record<string, string> = {};
+  if (device) {
+    const { sensorStatus: raw, ...deviceSummary } = device;
+    summary = deviceSummary;
+    sensorStatus = reportedStatuses(raw);
+  }
+  // `thresholds` rides alongside `latest` so the dashboard colors a reading by the same numbers that raise
+  // its alerts, instead of keeping a second hand-synced copy of them in the frontend.
+  return { ...rest, device: summary, latest, thresholds: thresholdsFor(pond.pondType), sensorStatus };
+}
+
 pondsRouter.get("/", async (_req, res) => {
   const ponds = await prisma.pond.findMany({
     orderBy: { name: "asc" },
-    include: { device: { select: deviceSummarySelect } },
+    include: { device: { select: pondDeviceSelect } },
   });
   const latest = await latestReadingsByPond(ponds.map((pond) => pond.id));
-  // `thresholds` rides alongside `latest` so the dashboard colors a reading by the same numbers that raise
-  // its alerts, instead of keeping a second hand-synced copy of them in the frontend.
-  res.json({
-    ponds: ponds.map((pond) => ({
-      ...pond,
-      latest: latest.get(pond.id) ?? {},
-      thresholds: thresholdsFor(pond.pondType),
-    })),
-  });
+  res.json({ ponds: ponds.map((pond) => toPondPayload(pond, latest.get(pond.id) ?? {})) });
 });
 
 pondsRouter.get("/:id", validate(pondIdParams, "params"), async (req, res) => {
@@ -81,16 +96,14 @@ pondsRouter.get("/:id", validate(pondIdParams, "params"), async (req, res) => {
 
   const pond = await prisma.pond.findUnique({
     where: { id },
-    include: { device: { select: deviceSummarySelect } },
+    include: { device: { select: pondDeviceSelect } },
   });
   if (!pond) {
     return res.status(404).json({ error: "pond not found" });
   }
 
   const latest = await latestReadingsByPond([id]);
-  res.json({
-    pond: { ...pond, latest: latest.get(id) ?? {}, thresholds: thresholdsFor(pond.pondType) },
-  });
+  res.json({ pond: toPondPayload(pond, latest.get(id) ?? {}) });
 });
 
 // Newest-first, keyset-paginated log of raw readings (what the pond detail page's history table shows).

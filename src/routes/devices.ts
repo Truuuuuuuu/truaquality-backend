@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { z } from "zod";
 import { uptimePercent } from "../lib/deviceDiagnosticsRules.ts";
-import { deviceSummarySelect } from "../lib/devices.ts";
+import { deviceSummarySelect, reportedStatuses } from "../lib/devices.ts";
 import { DEVICE_OFFLINE_AFTER_MS } from "../lib/deviceWatchdog.ts";
 import { PARAMETER_IDS } from "../lib/parameters.ts";
 import { prisma } from "../lib/prisma.ts";
@@ -26,14 +26,6 @@ const DIAGNOSTICS_EVENT_LIMIT = 50;
 
 type LatestRow = { parameter: string; value: number; recordedAt: Date };
 type CompletenessRow = { parameter: string; readings: number; maxGapS: number | null; firstAt: Date; lastAt: Date };
-
-// sensorStatus is a Prisma Json column; only string values are real status tokens.
-function reportedStatuses(value: unknown): Record<string, string> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return {};
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
-  );
-}
 
 // Maintenance view of one unit for the device detail page: its latest self-report, per-sensor health over the
 // last 24 h, availability, and its event timeline. Any signed-in user may read it, like the rest of /devices.
