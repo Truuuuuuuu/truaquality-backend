@@ -40,6 +40,11 @@ export const MIN_TREND_COVERAGE = 0.5;
 // a day, the fit mostly tracks the time of day rather than a trend.
 export const MIN_TREND_SPAN_MS = DAY_MS;
 
+// ...and only from at least this many plotted points. Coverage alone let a line through 7 scattered hours spread
+// over 12 days pass as a trend. A reporting unit gives ~120 raw points in 2 h or 24 hourly points a day, so this
+// only ever holds back sparse test data; 12 is half a day of hourly points.
+export const MIN_TREND_POINTS = 12;
+
 // Per hour reads naturally up to a two-day range; past that, hourly rates get too small to show at a
 // parameter's display precision, so the rate switches to per day. Same 48 h edge as /series' raw resolution.
 const HOURLY_RATE_MAX_RANGE_MS = 2 * DAY_MS;
@@ -82,6 +87,7 @@ function trendFor(
   safeBand: { safeMin: number; safeMax: number },
 ): Trend | null {
   const fit = linearTrend(points);
+  if (points.length < MIN_TREND_POINTS) return null;
   if (fit === null || fit.coveredMs < Math.min(rangeMs * MIN_TREND_COVERAGE, MIN_TREND_SPAN_MS)) return null;
   const deadband = (safeBand.safeMax - safeBand.safeMin) * STABLE_SHARE_OF_SAFE_BAND;
   const direction: TrendDirection =

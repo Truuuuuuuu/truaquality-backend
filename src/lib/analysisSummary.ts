@@ -12,10 +12,11 @@ const DAY_MS = 24 * HOUR_MS;
 const DATE_FORMAT = new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Manila", month: "short", day: "numeric" });
 const TIME_FORMAT = new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Manila", hour: "numeric", minute: "2-digit" });
 
-// "Sep 1" at midnight, "Sep 1, 11:00 AM" otherwise — same as the dashboard's range chip.
+// "Sep 1" at the start or end of a day, "Sep 1, 11:00 AM" otherwise. The export dialog sends whole days as
+// 00:00 to 23:59:59, and "to Sep 30, 11:59 PM" read oddly for "through Sep 30".
 function formatDateTime(date: Date): string {
   const time = TIME_FORMAT.format(date);
-  return time === "12:00 AM" ? DATE_FORMAT.format(date) : `${DATE_FORMAT.format(date)}, ${time}`;
+  return time === "12:00 AM" || time === "11:59 PM" ? DATE_FORMAT.format(date) : `${DATE_FORMAT.format(date)}, ${time}`;
 }
 
 // A rolling range's `from` is resolved off the client's clock, so its width is only approximately 24 h; round

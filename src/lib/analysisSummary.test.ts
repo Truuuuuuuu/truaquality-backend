@@ -100,6 +100,15 @@ describe("describeAnalysis", () => {
     assert.match(text, /^In the last 3 days,/);
   });
 
+  test("whole days from the export dialog read as plain dates, not 11:59 PM", () => {
+    const text = describeAnalysis("temperature", analysis({}), thresholds.temperature, {
+      from: new Date("2029-12-22T16:00:00Z"), // Dec 23, 00:00 in Manila
+      to: new Date("2029-12-30T15:59:59Z"), // Dec 30, 23:59:59 in Manila
+      rolling: false,
+    });
+    assert.match(text, /^From Dec 23 to Dec 30, temperature averaged/);
+  });
+
   test("a trend whose rate rounds to zero reads as slowly; lower than before", () => {
     const text = describeAnalysis(
       "temperature",

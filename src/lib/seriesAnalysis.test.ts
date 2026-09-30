@@ -97,6 +97,20 @@ describe("analyzeSeries trend", () => {
     const points = hourlyTemperature(21, (i) => 25 + i / 10);
     assert.equal(analyzeSeries(points, { from: START, to: after(7 * DAY) }, null).temperature.trend, null);
   });
+  test("11 points spread over 2 days report no trend (fewer than 12 points)", () => {
+    const points = Array.from({ length: 11 }, (_, i) => hourlyTemperature(1, () => 25 + i / 2)[0]!).map((point, i) => ({
+      ...point,
+      t: after(i * 4.8 * HOUR),
+    }));
+    assert.equal(analyzeSeries(points, { from: START, to: after(2 * DAY) }, null).temperature.trend, null);
+  });
+  test("12 points spread over 2 days are enough", () => {
+    const points = Array.from({ length: 12 }, (_, i) => hourlyTemperature(1, () => 25 + i / 2)[0]!).map((point, i) => ({
+      ...point,
+      t: after(i * 4.3 * HOUR),
+    }));
+    assert.equal(analyzeSeries(points, { from: START, to: after(2 * DAY) }, null).temperature.trend?.direction, "rising");
+  });
   test("readings covering half the range are enough", () => {
     const result = analyzeSeries(rawTemperature(61, (i) => 25 + i / 60), TWO_HOURS, null);
     assert.equal(result.temperature.trend?.direction, "rising");
