@@ -375,9 +375,7 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
   - Each pond in `GET /ponds` / `GET /ponds/:id` also carries a top-level `sensorStatus` map: the assigned unit's
     latest per-sensor status tokens (strings only, via `reportedStatuses` in `src/lib/devices.ts`; `{}` with no
     device or no report). The raw `Device.sensorStatus` Json is stripped from `pond.device`.
-    `GET /notifications` likewise computes each row's `direction` (`"low"`/`"high"`) server-side. The one
-    exception is `SIGNED_OUT_THRESHOLDS` in the frontend, illustrative bands for the signed-out range key on
-    the auth pages, which have no pond and no token; nothing that judges a real reading may use it.
+    `GET /notifications` likewise computes each row's `direction` (`"low"`/`"high"`) server-side.
 - **Alerts and notifications** (`src/lib/alerts.ts`). After ingest stores new readings, `evaluatePondAlerts()`
   reads the pond's `pondType` once, then re-checks each touched parameter against that type's thresholds.
   - An `Alert` is one out-of-range **episode** per pond/parameter, not one row per bad reading: opened by the first
