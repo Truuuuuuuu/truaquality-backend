@@ -116,10 +116,28 @@ export function severityFor(
 // optical estimate off a vendor curve, not a reference turbidimeter reading; the cells stay real numbers so the
 // sheet can still be charted and averaged. label stays plain because the report's "Parameter" row and filenames
 // use it.
+//
+// approximate / sensorCeiling feed the analysis summary's wording (src/lib/analysisSummary.ts) and mirror the
+// frontend PARAMETERS entry: an approximate value reads "≈ 12.0 NTU", and a value at the firmware's 3000 NTU clamp
+// reads "≥ 3000" (at least this cloudy). Display only — never a threshold.
 export const PARAMETER_DISPLAY: Record<
   ParameterId,
-  { label: string; unit: string; precision: number; exportHeader: string }
+  {
+    label: string;
+    unit: string;
+    precision: number;
+    exportHeader: string;
+    approximate?: true;
+    sensorCeiling?: number;
+  }
 > = {
   temperature: { label: "Temperature", unit: "°C", precision: 1, exportHeader: "Temperature" },
-  turbidity: { label: "Turbidity", unit: "NTU", precision: 1, exportHeader: "Turbidity (NTU, approx.)" },
+  turbidity: {
+    label: "Turbidity",
+    unit: "NTU",
+    precision: 1,
+    exportHeader: "Turbidity (NTU, approx.)",
+    approximate: true,
+    sensorCeiling: 3000,
+  },
 };

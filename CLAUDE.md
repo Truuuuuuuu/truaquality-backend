@@ -28,7 +28,11 @@ Current surface area:
   least-squares trend over the plotted averages, "stable" under 5% of the pond's safe band width, no trend unless
   the readings span >= 50% of the range or >= 24 h, rate per hr up to 48 h and per day above. Judged against the pond's
   `pondType` thresholds, so — like alerts — the frontend computes none of it. It's a separate route rather than
-  part of `/series` because the dashboard tiles poll `/series` and don't need the previous-period query.
+  part of `/series` because the dashboard tiles poll `/series` and don't need the previous-period query. Each
+  parameter also carries `summary`: the same numbers worded as plain sentences by the pure, tested
+  `src/lib/analysisSummary.ts` (the frontend's History "Summary" renders it verbatim). Custom-range dates are
+  formatted in Asia/Manila; a request without `to` is a rolling window and reads "In the last 24 hours". Wording
+  uses `PARAMETER_DISPLAY` (label/unit/precision, `approximate` → "≈", `sensorCeiling` → "≥ 3000").
 - `GET /devices/:id/diagnostics` (protected, any role): maintenance view of one unit —
   `{ health: {rssi, uptimeS, resetReason, freeHeap, queuedSamples, diagnosticsAt, offlineSince}, sensors: [{parameter,
   lastReadingAt, lastValue, readings24h, longestGapMin24h, reportedStatus}], uptime24h, events }`. `sensors` lists

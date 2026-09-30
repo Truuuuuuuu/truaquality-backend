@@ -164,12 +164,14 @@ describe("turbidity (NTU) — BFAR safeMax 25, criticalMax PENDING BFAR", () => 
     }
   });
 
-  test("display metadata is Turbidity / NTU / precision 1", () => {
+  test("display metadata is Turbidity / NTU / precision 1, approximate, 3000 NTU ceiling", () => {
     assert.deepEqual(PARAMETER_DISPLAY.turbidity, {
       label: "Turbidity",
       unit: "NTU",
       precision: 1,
       exportHeader: "Turbidity (NTU, approx.)",
+      approximate: true,
+      sensorCeiling: 3000,
     });
   });
 

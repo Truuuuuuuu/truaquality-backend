@@ -2,9 +2,10 @@ import { Router } from "express";
 import type { z } from "zod";
 import { Prisma } from "../generated/prisma/client.ts";
 import { deviceSummarySelect, reportedStatuses } from "../lib/devices.ts";
-import { PARAMETER_IDS, thresholdsFor } from "../lib/parameters.ts";
+import { isParameterId, PARAMETER_IDS, thresholdsFor } from "../lib/parameters.ts";
 import { prisma } from "../lib/prisma.ts";
 import { rawRetentionDays } from "../lib/readingRollup.ts";
+import { describeAnalysis } from "../lib/analysisSummary.ts";
 import { analyzeSeries, previousRange, type ParameterAnalysis, type SeriesPoint } from "../lib/seriesAnalysis.ts";
 import { streamReadingsExport, validateExportRange } from "../lib/readingsExport.ts";
 import { decodeReadingsCursor, encodeReadingsCursor, type ReadingsCursor } from "../lib/readingsCursor.ts";
@@ -299,9 +300,18 @@ pondsRouter.get(
     const analysis = analyzeSeries(current.points, range, pond.pondType);
     const previousAnalysis = analyzeSeries(before.points, previous, pond.pondType);
 
-    const parameters: Record<string, ParameterAnalysis & { previousAvg: number | null }> = {};
+    // `summary` words the same numbers as sentences (src/lib/analysisSummary.ts). A request without `to` is a
+    // rolling "last N hours" window, so the summary names it that way instead of quoting dates.
+    const thresholds = thresholdsFor(pond.pondType);
+    const summaryRange = { ...range, rolling: to === undefined };
+    const parameters: Record<string, ParameterAnalysis & { previousAvg: number | null; summary: string }> = {};
     for (const [parameterId, result] of Object.entries(analysis)) {
-      parameters[parameterId] = { ...result, previousAvg: previousAnalysis[parameterId]?.avg ?? null };
+      if (!isParameterId(parameterId)) continue;
+      const withPrevious = { ...result, previousAvg: previousAnalysis[parameterId]?.avg ?? null };
+      parameters[parameterId] = {
+        ...withPrevious,
+        summary: describeAnalysis(parameterId, withPrevious, thresholds[parameterId], summaryRange),
+      };
     }
     res.json({ from: range.from, to: range.to, previousFrom: previous.from, previousTo: previous.to, parameters });
   },
