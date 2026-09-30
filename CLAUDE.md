@@ -23,7 +23,7 @@ Current surface area:
 - `GET /ponds/:id/analysis?from&to[&parameter]` (protected, any role): historical trend analysis for the pond
   detail charts — per parameter `{min, max, avg, outOfRangeShare, worst, trend: {direction, rate, rateUnit} | null,
   previousAvg}`, plus the `from/to/previousFrom/previousTo` it used. Reads the same points as `/series` (shared
-  `loadSeries` in `routes/ponds.ts`) for the range and for the equal-length period just before it; the rules are
+  `loadSeries`/`analyzePondRange` in `src/lib/pondAnalysis.ts`, also used by the export's Summary sheet) for the range and for the equal-length period just before it; the rules are
   the pure, tested `src/lib/seriesAnalysis.ts`: count-weighted avg, bucket min/max for extremes and `worst`,
   least-squares trend over the plotted averages, "stable" under 5% of the pond's safe band width, no trend unless
   the readings span >= 50% of the range or >= 24 h, rate per hr up to 48 h and per day above. Judged against the pond's
@@ -323,6 +323,14 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
     the unit (e.g. `27.6 °C`) without turning the value into text. Column headers come from
     `PARAMETER_DISPLAY[id].exportHeader` (turbidity: "Turbidity (NTU, approx.)"); the "Parameter" report row
     keeps the plain `label`.
+    - The workbook opens on a **"Summary" sheet** written before "Readings": the same report header plus a note,
+      then one row per exported parameter — Min / Max / Average (unit-formatted numbers), out-of-range %, worst
+      level, trend, signed rate, change vs the previous period, and the **Interpretation** sentence identical to
+      the dashboard's Trend summary (`analyzePondRange`; rows from the pure, tested `src/lib/exportSummary.ts`).
+      The route runs the analysis **before** streaming starts, so a failure there still answers JSON instead of
+      truncating a 200 response.
+    - With exceljs's streaming writer, set column widths **before the first row is committed**; a width set
+      after is silently dropped (the Readings sheet's widths were lost this way until quick-260930-fy0).
 - `DeviceEvent`: the durable per-device timeline (`OFFLINE | ONLINE | REBOOT | SENSOR_FAULT | SENSOR_RECOVERED |
   FIRMWARE_CHANGED`, optional `parameter`/`detail`), cascade-deleted with its device, RLS-enabled like every table.
   Notifications can't serve this: they're per user and deleted with the account.

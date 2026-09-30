@@ -1,7 +1,9 @@
 import ExcelJS from "exceljs";
 import type { Response } from "express";
 import type { ReadingHourly } from "../generated/prisma/client.ts";
+import { SUMMARY_HEADERS, summaryRows } from "./exportSummary.ts";
 import { PARAMETER_DISPLAY, PARAMETER_IDS, type ParameterId } from "./parameters.ts";
+import type { PondAnalysis } from "./pondAnalysis.ts";
 import { prisma } from "./prisma.ts";
 import { rawRetentionDays } from "./readingRollup.ts";
 
@@ -115,11 +117,19 @@ export type ReadingsExportParams = {
   from: Date;
   to: Date;
   resolution: ExportResolution;
+  // The same analysis the dashboard's Trend summary shows (lib/pondAnalysis.ts), written as a "Summary" sheet
+  // ahead of the readings. Computed by the route before streaming starts, so a failure there still answers JSON.
+  analysis: PondAnalysis;
 };
+
+const HEADER_FILL: ExcelJS.Fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE2E8F0" } };
 
 // Sets the response headers, builds the workbook, and streams every row — call only after
 // validateExportRange() has passed. Resolves once the workbook (and so the response) is fully written.
-export async function streamReadingsExport(res: Response, { pond, parameter, from, to, resolution }: ReadingsExportParams) {
+export async function streamReadingsExport(
+  res: Response,
+  { pond, parameter, from, to, resolution, analysis }: ReadingsExportParams,
+) {
   const filenameStem = pond.name.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "") || "pond";
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   res.setHeader("Content-Disposition", `attachment; filename="${filenameStem}-readings-${resolution}.xlsx"`);
@@ -127,34 +137,77 @@ export async function streamReadingsExport(res: Response, { pond, parameter, fro
   // useStyles: borders/fills/bold would otherwise be silently ignored — style info costs some performance,
   // which is exactly why the writer defaults it off.
   const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ stream: res, useStyles: true });
-  const sheet = workbook.addWorksheet("Readings");
-
-  // A short report header (what/who/when this covers), then a blank row before the data table — reads like
-  // a report exported from any reporting tool, and re-states the filter a filename alone can't (the exact
-  // range and, if set, which single parameter).
-  sheet.addRow(["Pond", pond.name]).commit();
-  sheet.addRow(["Date range (Asia/Manila)", `${formatManilaTimestamp(from)} to ${formatManilaTimestamp(to)}`]).commit();
-  sheet.addRow(["Resolution", resolution === "raw" ? "Raw (per-minute)" : "Hourly average"]).commit();
-  sheet.addRow(["Parameter", parameter ? PARAMETER_DISPLAY[parameter].label : "All parameters"]).commit();
-  sheet.addRow(["Generated", formatManilaTimestamp(new Date())]).commit();
-  sheet.addRow([]).commit();
-
-  // One column per parameter (each cell holding a real number formatted as "value unit", e.g. "27.6 °C")
-  // rather than one row per parameter per timestamp — reads as a normal wide table instead of a long,
-  // repetitive log once more than one parameter is involved.
   const columns = parameter ? [parameter] : PARAMETER_IDS;
-  const headerRow = sheet.addRow(["Time (Asia/Manila)", ...columns.map((colId) => PARAMETER_DISPLAY[colId].exportHeader)]);
-  headerRow.eachCell((cell) => {
-    cell.font = { bold: true };
-    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE2E8F0" } };
-    cell.border = THIN_BORDER;
-    cell.alignment = { horizontal: "center" };
+  const generated = formatManilaTimestamp(new Date());
+
+  // A short report header (what/who/when this covers), then a blank row before the table — reads like a
+  // report exported from any reporting tool, and re-states the filter a filename alone can't (the exact range
+  // and, if set, which single parameter). Both sheets carry it, so either one printed alone still says what it is.
+  const writeReportHeader = (target: ExcelJS.Worksheet, extra: [string, string][] = []) => {
+    target.addRow(["Pond", pond.name]).commit();
+    target.addRow(["Date range (Asia/Manila)", `${formatManilaTimestamp(from)} to ${formatManilaTimestamp(to)}`]).commit();
+    target.addRow(["Resolution", resolution === "raw" ? "Raw (per-minute)" : "Hourly average"]).commit();
+    target.addRow(["Parameter", parameter ? PARAMETER_DISPLAY[parameter].label : "All parameters"]).commit();
+    target.addRow(["Generated", generated]).commit();
+    for (const row of extra) target.addRow(row).commit();
+    target.addRow([]).commit();
+  };
+
+  // First sheet, so the conclusion is the first thing a reader sees: one row per parameter with the numbers
+  // and, in plain words, what they mean.
+  const summarySheet = workbook.addWorksheet("Summary");
+  // Column widths must be set before the first row is committed: the streaming writer emits them with the
+  // sheet's first bytes, and a width set later is silently dropped.
+  [26, 12, 12, 12, 14, 12, 16, 18, 18, 90].forEach((width, index) => {
+    summarySheet.getColumn(index + 1).width = width;
   });
-  headerRow.commit();
+  writeReportHeader(summarySheet, [
+    [
+      "Note",
+      "Calculated the same way as the dashboard's Trend summary, from the chart data for this range; may differ " +
+        "slightly from averages worked out on the Readings sheet.",
+    ],
+  ]);
+  const summaryHeader = summarySheet.addRow([...SUMMARY_HEADERS]);
+  summaryHeader.eachCell((cell) => {
+    cell.font = { bold: true };
+    cell.fill = HEADER_FILL;
+    cell.border = THIN_BORDER;
+    cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+  });
+  summaryHeader.commit();
+  for (const cells of summaryRows(columns, analysis.parameters)) {
+    const row = summarySheet.addRow(cells.map((cell) => cell.value));
+    row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+      const source = cells[colNumber - 1];
+      cell.border = THIN_BORDER;
+      cell.alignment = { vertical: "top", wrapText: colNumber === SUMMARY_HEADERS.length };
+      if (source?.numFmt) cell.numFmt = source.numFmt;
+    });
+    row.commit();
+  }
+  summarySheet.commit();
+
+  const sheet = workbook.addWorksheet("Readings");
+  // Before any row, for the same reason as the Summary sheet (these widths were previously set after the header
+  // row and never reached the file).
   sheet.getColumn(1).width = 22;
   columns.forEach((colId, index) => {
     sheet.getColumn(index + 2).width = Math.max(14, PARAMETER_DISPLAY[colId].exportHeader.length + 4);
   });
+  writeReportHeader(sheet);
+
+  // One column per parameter (each cell holding a real number formatted as "value unit", e.g. "27.6 °C")
+  // rather than one row per parameter per timestamp — reads as a normal wide table instead of a long,
+  // repetitive log once more than one parameter is involved.
+  const headerRow = sheet.addRow(["Time (Asia/Manila)", ...columns.map((colId) => PARAMETER_DISPLAY[colId].exportHeader)]);
+  headerRow.eachCell((cell) => {
+    cell.font = { bold: true };
+    cell.fill = HEADER_FILL;
+    cell.border = THIN_BORDER;
+    cell.alignment = { horizontal: "center" };
+  });
+  headerRow.commit();
 
   if (resolution === "raw") {
     await streamPivotedXlsx<{ recordedAt: Date; id: bigint }>(sheet, columns, async (cursor) => {

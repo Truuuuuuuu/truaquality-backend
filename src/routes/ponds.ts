@@ -2,11 +2,9 @@ import { Router } from "express";
 import type { z } from "zod";
 import { Prisma } from "../generated/prisma/client.ts";
 import { deviceSummarySelect, reportedStatuses } from "../lib/devices.ts";
-import { isParameterId, PARAMETER_IDS, thresholdsFor } from "../lib/parameters.ts";
+import { PARAMETER_IDS, thresholdsFor } from "../lib/parameters.ts";
 import { prisma } from "../lib/prisma.ts";
-import { rawRetentionDays } from "../lib/readingRollup.ts";
-import { describeAnalysis } from "../lib/analysisSummary.ts";
-import { analyzeSeries, previousRange, type ParameterAnalysis, type SeriesPoint } from "../lib/seriesAnalysis.ts";
+import { analyzePondRange, loadSeries } from "../lib/pondAnalysis.ts";
 import { streamReadingsExport, validateExportRange } from "../lib/readingsExport.ts";
 import { decodeReadingsCursor, encodeReadingsCursor, type ReadingsCursor } from "../lib/readingsCursor.ts";
 import { readingsExportRateLimit } from "../middleware/loginRateLimit.ts";
@@ -14,17 +12,6 @@ import { requireAuth } from "../middleware/requireAuth.ts";
 import { validate } from "../middleware/validate.ts";
 import { pondIdParams, readingsExportQuery, readingsPageQuery, seriesQuery } from "../schemas/ponds.ts";
 
-// Above this range, /series answers from raw Reading rows (below it, tiles/charts want per-minute
-// resolution); beyond it, ReadingHourly rows are used instead — first at hourly grain, then daily once the
-// range would otherwise mean thousands of hourly points.
-const SERIES_RAW_MAX_RANGE_MS = 48 * 60 * 60 * 1000;
-const SERIES_HOURLY_MAX_RANGE_MS = 92 * 24 * 60 * 60 * 1000;
-
-// A hard ceiling on rows per response, independent of the range checks above. Those bound the
-// *window*, not the row count: at a 30 s sampling interval with `parameter` omitted, 48 h of raw
-// readings is already ~17k rows materialized in memory and serialized to JSON. 20k leaves headroom
-// over every legitimate query while stopping one request from trying to page the whole table.
-const SERIES_MAX_POINTS = 20_000;
 
 export const pondsRouter = Router();
 
@@ -164,86 +151,6 @@ pondsRouter.get(
   },
 );
 
-// A chart-ready series over an arbitrary range. Picks its own resolution — raw for a short, recent range;
-// hourly (ReadingHourly) once the range would mean too many raw points or reaches past raw retention; daily
-// once it would mean too many hourly points. Shared by /series and /analysis so both read the same points.
-async function loadSeries(
-  pondId: string,
-  parameter: string | undefined,
-  from: Date,
-  end: Date,
-): Promise<{ resolution: "raw" | "hour" | "day"; points: SeriesPoint[] }> {
-  const rangeMs = end.getTime() - from.getTime();
-  const rawCutoff = new Date(Date.now() - rawRetentionDays() * 24 * 60 * 60 * 1000);
-
-  if (rangeMs <= SERIES_RAW_MAX_RANGE_MS && from >= rawCutoff) {
-    // Ordered newest-first so that if the range holds more than SERIES_MAX_POINTS rows, `take` keeps
-    // the most recent ones (what every caller of this endpoint actually wants — a recent-trend chart's
-    // right edge, "now") instead of silently dropping them and keeping only the oldest, stalest points.
-    const rows = await prisma.reading.findMany({
-      where: { pondId, parameter, recordedAt: { gte: from, lte: end } },
-      orderBy: { recordedAt: "desc" },
-      take: SERIES_MAX_POINTS,
-      select: { parameter: true, value: true, recordedAt: true },
-    });
-    rows.reverse();
-    return {
-      resolution: "raw",
-      points: rows.map((row) => ({
-        parameter: row.parameter,
-        t: row.recordedAt,
-        avg: row.value,
-        min: row.value,
-        max: row.value,
-        count: 1,
-      })),
-    };
-  }
-
-  if (rangeMs <= SERIES_HOURLY_MAX_RANGE_MS) {
-    const rows = await prisma.readingHourly.findMany({
-      where: { pondId, parameter, bucketStart: { gte: from, lte: end } },
-      orderBy: { bucketStart: "asc" },
-      take: SERIES_MAX_POINTS,
-      select: { parameter: true, bucketStart: true, min: true, max: true, sum: true, count: true },
-    });
-    return {
-      resolution: "hour",
-      points: rows.map((row) => ({
-        parameter: row.parameter,
-        t: row.bucketStart,
-        avg: row.sum / row.count,
-        min: row.min,
-        max: row.max,
-        count: row.count,
-      })),
-    };
-  }
-
-  const parameterFilter = parameter ? Prisma.sql`AND "parameter" = ${parameter}` : Prisma.empty;
-  const rows = await prisma.$queryRaw<
-    { parameter: string; bucket: Date; min: number; max: number; sum: number; count: number }[]
-  >`
-    SELECT "parameter", date_trunc('day', "bucketStart" AT TIME ZONE 'Asia/Manila') AS bucket,
-           min("min") AS min, max("max") AS max, sum("sum") AS sum, sum("count")::int AS count
-    FROM "ReadingHourly"
-    WHERE "pondId" = ${pondId}::uuid AND "bucketStart" >= ${from} AND "bucketStart" <= ${end} ${parameterFilter}
-    GROUP BY "parameter", bucket
-    ORDER BY bucket ASC
-  `;
-  return {
-    resolution: "day",
-    points: rows.map((row) => ({
-      parameter: row.parameter,
-      t: row.bucket,
-      avg: row.sum / row.count,
-      min: row.min,
-      max: row.max,
-      count: row.count,
-    })),
-  };
-}
-
 pondsRouter.get(
   "/:id/series",
   validate(pondIdParams, "params"),
@@ -291,29 +198,8 @@ pondsRouter.get(
       return res.status(404).json({ error: "pond not found" });
     }
 
-    const range = { from, to: end };
-    const previous = previousRange(range);
-    const [current, before] = await Promise.all([
-      loadSeries(id, parameter, range.from, range.to),
-      loadSeries(id, parameter, previous.from, previous.to),
-    ]);
-    const analysis = analyzeSeries(current.points, range, pond.pondType);
-    const previousAnalysis = analyzeSeries(before.points, previous, pond.pondType);
-
-    // `summary` words the same numbers as sentences (src/lib/analysisSummary.ts). A request without `to` is a
-    // rolling "last N hours" window, so the summary names it that way instead of quoting dates.
-    const thresholds = thresholdsFor(pond.pondType);
-    const summaryRange = { ...range, rolling: to === undefined };
-    const parameters: Record<string, ParameterAnalysis & { previousAvg: number | null; summary: string }> = {};
-    for (const [parameterId, result] of Object.entries(analysis)) {
-      if (!isParameterId(parameterId)) continue;
-      const withPrevious = { ...result, previousAvg: previousAnalysis[parameterId]?.avg ?? null };
-      parameters[parameterId] = {
-        ...withPrevious,
-        summary: describeAnalysis(parameterId, withPrevious, thresholds[parameterId], summaryRange),
-      };
-    }
-    res.json({ from: range.from, to: range.to, previousFrom: previous.from, previousTo: previous.to, parameters });
+    const result = await analyzePondRange({ pondId: id, pondType: pond.pondType, parameter, from, to: end, rolling: to === undefined });
+    res.json(result);
   },
 );
 
@@ -334,7 +220,7 @@ pondsRouter.get(
       return res.status(400).json({ error: "from must be before to" });
     }
 
-    const pond = await prisma.pond.findUnique({ where: { id }, select: { id: true, name: true } });
+    const pond = await prisma.pond.findUnique({ where: { id }, select: { id: true, name: true, pondType: true } });
     if (!pond) {
       return res.status(404).json({ error: "pond not found" });
     }
@@ -344,6 +230,16 @@ pondsRouter.get(
       return res.status(400).json({ error: rangeError });
     }
 
-    await streamReadingsExport(res, { pond, parameter, from, to: end, resolution });
+    // The Summary sheet's analysis, worked out before any byte of the workbook is sent: once streaming starts
+    // the status is 200 and an error could only truncate the file.
+    const analysis = await analyzePondRange({
+      pondId: pond.id,
+      pondType: pond.pondType,
+      parameter,
+      from,
+      to: end,
+      rolling: to === undefined,
+    });
+    await streamReadingsExport(res, { pond, parameter, from, to: end, resolution, analysis });
   },
 );
