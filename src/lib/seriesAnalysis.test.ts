@@ -16,6 +16,14 @@ function rawTemperature(minutes: number, f: (i: number) => number): SeriesPoint[
   });
 }
 
+// Hourly-bucket temperature points (60 readings each), value from `f(hour)`.
+function hourlyTemperature(hours: number, f: (i: number) => number): SeriesPoint[] {
+  return Array.from({ length: hours }, (_, i) => {
+    const v = f(i);
+    return { parameter: "temperature", t: after(i * HOUR), avg: v, min: v, max: v, count: 60 };
+  });
+}
+
 const TWO_HOURS = { from: START, to: after(2 * HOUR) };
 
 describe("linearTrend", () => {
@@ -74,6 +82,20 @@ describe("analyzeSeries trend", () => {
   test("a 30-minute burst inside a 7-day range reports no trend", () => {
     const result = analyzeSeries(rawTemperature(30, (i) => 27 + i / 10), { from: START, to: after(7 * DAY) }, null);
     assert.equal(result.temperature.trend, null);
+  });
+  test("a 30-minute burst inside a 24 h range reports no trend", () => {
+    const result = analyzeSeries(rawTemperature(30, (i) => 27 + i / 10), { from: START, to: after(DAY) }, null);
+    assert.equal(result.temperature.trend, null);
+  });
+  test("12 days of hourly readings in a 27-day range report a trend (a full day is enough)", () => {
+    const points = hourlyTemperature(12 * 24, (i) => 30 - i / 96);
+    const trend = analyzeSeries(points, { from: START, to: after(27 * DAY) }, null).temperature.trend;
+    assert.equal(trend?.direction, "falling");
+    assert.equal(trend?.rateUnit, "day");
+  });
+  test("20 hours of readings in a 7-day range report no trend (under half and under a day)", () => {
+    const points = hourlyTemperature(21, (i) => 25 + i / 10);
+    assert.equal(analyzeSeries(points, { from: START, to: after(7 * DAY) }, null).temperature.trend, null);
   });
   test("readings covering half the range are enough", () => {
     const result = analyzeSeries(rawTemperature(61, (i) => 25 + i / 60), TWO_HOURS, null);

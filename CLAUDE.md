@@ -26,7 +26,7 @@ Current surface area:
   `loadSeries` in `routes/ponds.ts`) for the range and for the equal-length period just before it; the rules are
   the pure, tested `src/lib/seriesAnalysis.ts`: count-weighted avg, bucket min/max for extremes and `worst`,
   least-squares trend over the plotted averages, "stable" under 5% of the pond's safe band width, no trend unless
-  the readings span >= 50% of the range, rate per hr up to 48 h and per day above. Judged against the pond's
+  the readings span >= 50% of the range or >= 24 h, rate per hr up to 48 h and per day above. Judged against the pond's
   `pondType` thresholds, so — like alerts — the frontend computes none of it. It's a separate route rather than
   part of `/series` because the dashboard tiles poll `/series` and don't need the previous-period query.
 - `GET /devices/:id/diagnostics` (protected, any role): maintenance view of one unit —

@@ -32,8 +32,13 @@ export const STABLE_SHARE_OF_SAFE_BAND = 0.05;
 
 // A fit through a short burst of readings says nothing about the range around it: 30 minutes of warm-up
 // inside a 7-day window extrapolated to "+55 °C/day" on the dashboard. So a trend is only reported when the
-// readings span at least this share of the requested range.
+// readings span at least this share of the requested range...
 export const MIN_TREND_COVERAGE = 0.5;
+
+// ...or at least a full day. Without this, picking a wide custom range hid a trend that 12 days of readings
+// clearly showed (12 of 27 days < 50%). A day is the floor because pond temperature swings every day: under
+// a day, the fit mostly tracks the time of day rather than a trend.
+export const MIN_TREND_SPAN_MS = DAY_MS;
 
 // Per hour reads naturally up to a two-day range; past that, hourly rates get too small to show at a
 // parameter's display precision, so the rate switches to per day. Same 48 h edge as /series' raw resolution.
@@ -77,7 +82,7 @@ function trendFor(
   safeBand: { safeMin: number; safeMax: number },
 ): Trend | null {
   const fit = linearTrend(points);
-  if (fit === null || fit.coveredMs < rangeMs * MIN_TREND_COVERAGE) return null;
+  if (fit === null || fit.coveredMs < Math.min(rangeMs * MIN_TREND_COVERAGE, MIN_TREND_SPAN_MS)) return null;
   const deadband = (safeBand.safeMax - safeBand.safeMin) * STABLE_SHARE_OF_SAFE_BAND;
   const direction: TrendDirection =
     Math.abs(fit.fittedChange) < deadband ? "stable" : fit.fittedChange > 0 ? "rising" : "falling";
