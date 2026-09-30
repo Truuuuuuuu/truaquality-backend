@@ -3,11 +3,14 @@
 //
 //   npm run simulate:devices -- --device <deviceId>:<deviceSecret> [--device ...] [--interval 60]
 //                               [--fault <parameter>=<status> ...] [--no-turbidity] [--turbidity <ntu>]
+//                               [--temperature <°C>]
 //
 // Each unit reports temperature then turbidity (0.1 NTU steps, drifting 0..60 NTU across the 25 NTU safe line so
 // a WARNING episode can be demoed). `--no-turbidity` drops the turbidity value and its sensors key entirely, like
 // firmware older than 0.4.0. `--turbidity <ntu>` holds turbidity at a fixed NTU (0..3000, the firmware's clamp
-// range) instead of drifting, to demo a spike (e.g. 400) or the 3000 NTU sensor ceiling.
+// range) instead of drifting, to demo a spike (e.g. 400) or the 3000 NTU sensor ceiling. `--temperature <°C>`
+// likewise holds temperature at a fixed value (-5..60, the ingest bounds), so a demo can step through the BFAR
+// bands on demand (e.g. 25 normal, 32 WARNING, 37 CRITICAL) instead of waiting for the drift to cross them.
 //
 // Every message carries the firmware 0.6.0 extras in wire order — diag (integer rssi, uptimeS, resetReason,
 // freeHeap, queued) and a per-sensor status map — so the device diagnostics page can be demoed without hardware.
@@ -30,6 +33,7 @@ const { values } = parseArgs({
     url: { type: "string", default: process.env.MQTT_URL },
     "no-turbidity": { type: "boolean", default: false },
     turbidity: { type: "string" },
+    temperature: { type: "string" },
   },
 });
 
@@ -37,9 +41,10 @@ const specs = values.device ?? [];
 const intervalMs = Number(values.interval) * 1000;
 if (specs.length === 0 || !values.url || !Number.isFinite(intervalMs) || intervalMs <= 0) {
   console.error(
-    "Usage: npm run simulate:devices -- --device <deviceId>:<deviceSecret> [--device ...] [--interval <seconds>] [--fault <parameter>=<status> ...] [--no-turbidity] [--turbidity <ntu>]",
+    "Usage: npm run simulate:devices -- --device <deviceId>:<deviceSecret> [--device ...] [--interval <seconds>] [--fault <parameter>=<status> ...] [--no-turbidity] [--turbidity <ntu>] [--temperature <°C>]",
   );
   console.error("--turbidity <ntu> holds turbidity at a fixed NTU (0..3000) to demo a spike or the 3000 NTU ceiling.");
+  console.error("--temperature <°C> holds temperature at a fixed value (-5..60) to demo a WARNING or CRITICAL band.");
   console.error("MQTT_URL, MQTT_USERNAME and MQTT_PASSWORD must be set in backend/.env.");
   process.exit(1);
 }
@@ -57,6 +62,17 @@ if (values.turbidity !== undefined) {
     process.exit(1);
   }
   pinnedTurbidity = ntu;
+}
+
+// -5..60 is PARAMETER_BOUNDS.temperature, so a pinned value is always stored rather than rejected at ingest.
+let pinnedTemperature: number | undefined;
+if (values.temperature !== undefined) {
+  const celsius = Number(values.temperature);
+  if (values.temperature.trim() === "" || !Number.isFinite(celsius) || celsius < -5 || celsius > 60) {
+    console.error(`Expected --temperature <°C> with a value between -5 and 60; got "${values.temperature}"`);
+    process.exit(1);
+  }
+  pinnedTemperature = celsius;
 }
 
 const faults = new Map<string, SensorStatus>();
@@ -96,7 +112,10 @@ const units = specs.map((spec) => {
       // turbidity value inside PARAMETER_BOUNDS (a negative one would be rejected at ingest).
       // 18..37 straddles the BFAR safe lines (20/30 °C) and the high critical line (35.5 °C) so WARNING and
       // CRITICAL temperature episodes can be demoed.
-      temperature: { value: 27 + Math.random() * 3, volatility: 0.35, min: 18, max: 37 },
+      temperature:
+        pinnedTemperature === undefined
+          ? { value: 27 + Math.random() * 3, volatility: 0.35, min: 18, max: 37 }
+          : { value: pinnedTemperature, volatility: 0, min: pinnedTemperature, max: pinnedTemperature },
       ...(values["no-turbidity"]
         ? {}
         : {

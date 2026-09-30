@@ -180,7 +180,7 @@ resolution of `tsc`/`tsx`/`ts-node`:
   3. If the DB write fails, delete the Supabase user so no orphaned login remains.
   The invite link lands on `INVITE_REDIRECT_URL` (a frontend page where the user sets a password). That URL
   must be in Supabase's allowed redirect URLs.
-- `npm run simulate:devices -- --device <deviceId>:<deviceSecret> [--device ...] [--interval 60] [--no-turbidity] [--turbidity <ntu>]`
+- `npm run simulate:devices -- --device <deviceId>:<deviceSecret> [--device ...] [--interval 60] [--no-turbidity] [--turbidity <ntu>] [--temperature <°C>]`
   (`scripts/simulate-devices.ts`) is **dev only**: it publishes synthetic, correctly signed readings to the
   MQTT broker as if it were ESP32 units, so the multi-pond UI can be tested before hardware is installed. Never
   point it at a production broker. Every message carries integer `diag` and a `sensors` map like firmware 0.6.0;
@@ -190,6 +190,8 @@ resolution of `tsc`/`tsx`/`ts-node`:
   WARNING); `--no-turbidity` drops turbidity from values and `sensors`, mimicking firmware older than 0.4.0.
   `--turbidity <ntu>` pins turbidity to a fixed NTU (validated 0..3000, the firmware clamp range; refused with
   `--no-turbidity`) to demo a spike (e.g. 400) or the 3000 NTU sensor ceiling.
+  `--temperature <°C>` likewise pins temperature (validated -5..60, `PARAMETER_BOUNDS`) to step through the BFAR
+  bands on demand (e.g. 25 normal, 32 WARNING, 37 CRITICAL).
 - `npm run purge:parameters -- --parameter <id> [--parameter ...] [--apply]` (`scripts/purge-parameters.ts`)
   deletes the stored readings, hourly summaries, and alerts (plus their notifications) of a parameter that has
   been removed from `PARAMETER_BOUNDS`. Dry run unless `--apply`; refuses live parameter ids.
