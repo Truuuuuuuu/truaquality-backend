@@ -18,8 +18,17 @@ Current surface area:
 - `/health`, `/health/db`
 - `/auth/login`, `/auth/refresh`, `/auth/logout`
 - `/me` (protected): `GET` own profile, `DELETE` own account (password-confirmed, see "Identity model")
-- `/ponds`, `/ponds/:id`, `/ponds/:id/readings` (paginated), `/ponds/:id/series`, `/ponds/:id/readings/export`
-  (.xlsx), `/devices` (protected, any role)
+- `/ponds`, `/ponds/:id`, `/ponds/:id/readings` (paginated), `/ponds/:id/series`, `/ponds/:id/analysis`,
+  `/ponds/:id/readings/export` (.xlsx), `/devices` (protected, any role)
+- `GET /ponds/:id/analysis?from&to[&parameter]` (protected, any role): historical trend analysis for the pond
+  detail charts — per parameter `{min, max, avg, outOfRangeShare, worst, trend: {direction, rate, rateUnit} | null,
+  previousAvg}`, plus the `from/to/previousFrom/previousTo` it used. Reads the same points as `/series` (shared
+  `loadSeries` in `routes/ponds.ts`) for the range and for the equal-length period just before it; the rules are
+  the pure, tested `src/lib/seriesAnalysis.ts`: count-weighted avg, bucket min/max for extremes and `worst`,
+  least-squares trend over the plotted averages, "stable" under 5% of the pond's safe band width, no trend unless
+  the readings span >= 50% of the range, rate per hr up to 48 h and per day above. Judged against the pond's
+  `pondType` thresholds, so — like alerts — the frontend computes none of it. It's a separate route rather than
+  part of `/series` because the dashboard tiles poll `/series` and don't need the previous-period query.
 - `GET /devices/:id/diagnostics` (protected, any role): maintenance view of one unit —
   `{ health: {rssi, uptimeS, resetReason, freeHeap, queuedSamples, diagnosticsAt, offlineSince}, sensors: [{parameter,
   lastReadingAt, lastValue, readings24h, longestGapMin24h, reportedStatus}], uptime24h, events }`. `sensors` lists
