@@ -50,6 +50,7 @@ const SHARED: Record<ParameterId, Threshold> = {
   // Temperature (°C) — from BFAR Sorsogon, the client agency. BFAR's desirable range 20.0–30.0 °C is the safe band
   // (outside it = WARNING); its acceptable range 15.0–35.5 °C is the critical band (outside it = CRITICAL).
   // SHARED across pond types because BFAR gave one range for all of them.
+  // Source: Abowei, 2010 as cited by Bantaya, 2016.
   temperature: { safeMin: 20, safeMax: 30, criticalMin: 15, criticalMax: 35.5 },
   // Turbidity (NTU) — PROVISIONAL, pending BFAR review.
   // - safeMax 25 NTU ("below 25 NTU is normal, above is above-normal"): [BFAR document — citation to be supplied].
