@@ -77,7 +77,9 @@ async function streamPivotedXlsx<TCursor>(
   sheet: ExcelJS.Worksheet,
   columns: readonly string[],
   fetchPage: (cursor: TCursor | null) => Promise<PivotSourceRow<TCursor>[]>,
-) {
+  isAborted: () => boolean,
+): Promise<{ pages: number; aborted: boolean }> {
+  let pages = 0;
   let pending = new Map<string, number>();
   let pendingTimeKey: string | null = null;
   let cursor: TCursor | null = null;
@@ -98,7 +100,11 @@ async function streamPivotedXlsx<TCursor>(
   };
 
   for (;;) {
+    // A 2-year hourly export is many pages; once the client has gone (closed the tab, cancelled the download)
+    // there is no one to stream to, so stop querying instead of paging the rest of the table into a dead socket.
+    if (isAborted()) return { pages, aborted: true };
     const rows = await fetchPage(cursor);
+    pages++;
     if (rows.length === 0) break;
     for (const row of rows) {
       if (pendingTimeKey !== null && row.timeKey !== pendingTimeKey) flush();
@@ -109,6 +115,7 @@ async function streamPivotedXlsx<TCursor>(
     if (rows.length < EXPORT_CHUNK_SIZE) break;
   }
   flush();
+  return { pages, aborted: false };
 }
 
 export type ReadingsExportParams = {
@@ -130,6 +137,13 @@ export async function streamReadingsExport(
   res: Response,
   { pond, parameter, from, to, resolution, analysis }: ReadingsExportParams,
 ) {
+  // "close" also fires after a normal finish; only a close before the response finished is a disconnect.
+  let clientGone = false;
+  res.once("close", () => {
+    if (!res.writableFinished) clientGone = true;
+  });
+  const isAborted = () => clientGone || res.destroyed;
+
   const filenameStem = pond.name.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "") || "pond";
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   res.setHeader("Content-Disposition", `attachment; filename="${filenameStem}-readings-${resolution}.xlsx"`);
@@ -209,8 +223,9 @@ export async function streamReadingsExport(
   });
   headerRow.commit();
 
+  let outcome: { pages: number; aborted: boolean };
   if (resolution === "raw") {
-    await streamPivotedXlsx<{ recordedAt: Date; id: bigint }>(sheet, columns, async (cursor) => {
+    outcome = await streamPivotedXlsx<{ recordedAt: Date; id: bigint }>(sheet, columns, async (cursor) => {
       const rows = await prisma.reading.findMany({
         where: {
           pondId: pond.id,
@@ -230,9 +245,9 @@ export async function streamReadingsExport(
         value: row.value,
         cursor: { recordedAt: row.recordedAt, id: row.id },
       }));
-    });
+    }, isAborted);
   } else {
-    await streamPivotedXlsx<{ bucketStart: Date; parameter: string }>(sheet, columns, async (cursor) => {
+    outcome = await streamPivotedXlsx<{ bucketStart: Date; parameter: string }>(sheet, columns, async (cursor) => {
       const rows: ReadingHourly[] = await prisma.readingHourly.findMany({
         where: {
           pondId: pond.id,
@@ -251,9 +266,15 @@ export async function streamReadingsExport(
         value: row.sum / row.count,
         cursor: { bucketStart: row.bucketStart, parameter: row.parameter },
       }));
-    });
+    }, isAborted);
   }
 
+  // Committing writes the workbook's closing parts into the stream; into a destroyed socket that only produces
+  // write errors, so a disconnected export just stops here.
+  if (outcome.aborted || isAborted()) {
+    console.warn(`[export] client disconnected, stopped after ${outcome.pages} pages (pond ${pond.id})`);
+    return;
+  }
   sheet.commit();
   await workbook.commit();
 }
