@@ -37,7 +37,7 @@ export function classifySamples(
   const rejected: RejectedValue[] = [];
   const storedParameters = new Set<ParameterId>();
   for (const sample of samples) {
-    const recordedAt = sample.recordedAt ?? receivedAt;
+    const { recordedAt } = sample;
     // A null value means "this sensor had nothing to report" — the same thing an omitted key means. It's
     // silently dropped, not treated as a rejected/invalid reading.
     const values = Object.entries(sample.values).filter(
@@ -72,6 +72,31 @@ export function classifySamples(
     }
   }
   return { rows, rejected, storedParameters };
+}
+
+// How one message may change the device row's liveness and self-report fields. Liveness comes from the newest
+// SIGNED sample time, never from when we happened to receive the message: anyone holding the shared HiveMQ
+// credential can re-publish (replay) an old captured message, and its signature still verifies. Driving lastSeenAt
+// from receive time let such a replay keep a dead unit looking online so the watchdog never flagged it.
+// - lastSeenAt only moves forward (max of stored and newest), so a replay or an old backlog batch cannot regress it.
+// - The newest time is clamped to receivedAt: the schema tolerates a few minutes of device clock skew, and a
+//   future lastSeenAt would keep the unit "online" for that long after it actually died.
+// - The self-report (firmware, SSID, diag, sensor status) and the device events derived from it describe the unit
+//   at the newest sample, so they are applied only when that sample is not older than what is already stored —
+//   otherwise a replay would roll the diagnostics back and log bogus REBOOT/SENSOR events.
+export function deviceStateUpdate(
+  previous: { lastSeenAt: Date | null },
+  samples: z.infer<typeof ingestSchema>["samples"],
+  receivedAt: Date,
+): { lastSeenAt: Date; newestSampleAt: Date; applySelfReport: boolean } {
+  let newest = -Infinity;
+  for (const sample of samples) newest = Math.max(newest, sample.recordedAt.getTime());
+  const newestSampleAt = new Date(Math.min(newest, receivedAt.getTime()));
+  const stored = previous.lastSeenAt;
+  if (stored !== null && newestSampleAt.getTime() < stored.getTime()) {
+    return { lastSeenAt: stored, newestSampleAt, applySelfReport: false };
+  }
+  return { lastSeenAt: newestSampleAt, newestSampleAt, applySelfReport: true };
 }
 
 // String union rather than the generated DeviceEventKind enum, so this module stays Prisma-free. OFFLINE/ONLINE

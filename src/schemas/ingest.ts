@@ -4,11 +4,13 @@ import { z } from "zod";
 const MAX_CLOCK_SKEW_MS = 5 * 60 * 1000;
 
 const sampleSchema = z.object({
+  // Required: the signed recordedAt is the only timestamp a replay cannot fake. When it was optional, a sample
+  // without one fell back to the server's receive time, so re-publishing an old captured message made a dead unit
+  // look freshly online. Firmware (WireFormat.cpp) and simulate-devices.ts always send it.
   recordedAt: z.iso
     .datetime({ offset: true })
     .transform((value) => new Date(value))
-    .refine((date) => date.getTime() <= Date.now() + MAX_CLOCK_SKEW_MS, "recordedAt is in the future")
-    .optional(),
+    .refine((date) => date.getTime() <= Date.now() + MAX_CLOCK_SKEW_MS, "recordedAt is in the future"),
   // Nullable because a device may explicitly send `null` for a sensor that failed to read (equivalent to
   // just omitting the key) rather than a garbage number. Parameter ids and value bounds are checked per
   // value in the handler, so one bad or missing probe reading doesn't throw away the rest of the batch —

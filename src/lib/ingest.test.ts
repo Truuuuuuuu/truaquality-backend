@@ -472,3 +472,62 @@ test("duplicate turbidity redelivery: second delivery stores nothing and skips a
   assert.equal(fake.readings.length, 1);
   assert.equal(argsOf(fake, "tx.$executeRaw")[0]!.values[0], "alert:pond-1:turbidity");
 });
+
+// S1: liveness and self-report follow the signed sample time, so a replayed capture can't fake a live unit.
+test("a replayed old message keeps lastSeenAt and the stored self-report, and derives no events", async (t) => {
+  const fake = createPrismaFake();
+  fake.install(t);
+
+  // The unit last reported at minute(-2) (uptime 5000 s); someone re-publishes a capture from minute(-10).
+  const previous = device({
+    lastSeenAt: minute(-2),
+    firmwareVersion: "0.6.0",
+    uptimeS: 5000,
+    sensorStatus: { temperature: "ok", turbidity: "ok" },
+    diagnosticsAt: minute(-2),
+  });
+  const replay = diagMessage({ samples: [{ recordedAt: minute(-10), values: { temperature: 28 } }] });
+  const result = await ingestSamples(previous, replay, minute(0));
+
+  const [update] = argsOf(fake, "device.update");
+  assert.deepEqual(update.data, { lastSeenAt: minute(-2) });
+  assert.equal(fake.ops().includes("deviceEvent.createMany"), false);
+  // The reading itself is still offered to the DB, whose unique key dedupes a true replay.
+  assert.deepEqual(result, { status: "stored", accepted: 1, duplicates: 0, rejected: [] });
+});
+
+test("a live message advances lastSeenAt and diagnosticsAt to the signed sample time", async (t) => {
+  const fake = createPrismaFake();
+  fake.install(t);
+
+  const recordedAt = at(-3_000);
+  await ingestSamples(
+    device({ lastSeenAt: minute(-1), uptimeS: 10 }),
+    diagMessage({ samples: [{ recordedAt, values: { temperature: 28 } }] }),
+    minute(0),
+  );
+
+  const [update] = argsOf(fake, "device.update");
+  assert.equal(update.data.lastSeenAt.getTime(), recordedAt.getTime());
+  assert.equal(update.data.diagnosticsAt.getTime(), recordedAt.getTime());
+  assert.equal(update.data.uptimeS, 60);
+});
+
+test("a backlog flush stores every sample and advances lastSeenAt to the newest one", async (t) => {
+  const fake = createPrismaFake();
+  fake.install(t);
+
+  const result = await ingestSamples(
+    device({ lastSeenAt: minute(-120) }),
+    {
+      firmwareVersion: "0.6.0",
+      samples: [minute(-90), minute(-60), minute(-1)].map((recordedAt) => ({ recordedAt, values: { temperature: 28 } })),
+    },
+    minute(0),
+  );
+
+  assert.deepEqual(result, { status: "stored", accepted: 3, duplicates: 0, rejected: [] });
+  const [update] = argsOf(fake, "device.update");
+  assert.equal(update.data.lastSeenAt.getTime(), minute(-1).getTime());
+  assert.equal(update.data.firmwareVersion, "0.6.0");
+});

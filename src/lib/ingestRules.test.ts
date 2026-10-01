@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { classifySamples, deriveDeviceEvents, MAX_SAMPLE_AGE_MS, MAX_SAMPLE_SKEW_MS } from "./ingestRules.ts";
+import {
+  classifySamples,
+  deriveDeviceEvents,
+  deviceStateUpdate,
+  MAX_SAMPLE_AGE_MS,
+  MAX_SAMPLE_SKEW_MS,
+} from "./ingestRules.ts";
 import { PARAMETER_BOUNDS } from "./parameters.ts";
 
 // Characterization of today's temperature and turbidity ingest decisions. Pure: no DB, no env, no wall clock — every
@@ -14,8 +20,8 @@ const unassignedClock = { id: "d1", pondId: "p1", assignedAt: null };
 const at = (offsetMs: number) => new Date(R.getTime() + offsetMs);
 
 describe("classifySamples", () => {
-  test("recordedAt omitted falls back to receivedAt", () => {
-    const { rows, rejected } = classifySamples(device, [{ values: { temperature: 27 } }], R);
+  test("a sample recorded at receivedAt is stored with that time", () => {
+    const { rows, rejected } = classifySamples(device, [{ recordedAt: R, values: { temperature: 27 } }], R);
     assert.equal(rejected.length, 0);
     assert.equal(rows.length, 1);
     assert.equal(rows[0]!.recordedAt.getTime(), R.getTime());
@@ -31,7 +37,7 @@ describe("classifySamples", () => {
   });
 
   test("null value is dropped silently — neither a row nor a rejection", () => {
-    const { rows, rejected, storedParameters } = classifySamples(device, [{ values: { temperature: null } }], R);
+    const { rows, rejected, storedParameters } = classifySamples(device, [{ recordedAt: R, values: { temperature: null } }], R);
     assert.equal(rows.length, 0);
     assert.equal(rejected.length, 0);
     assert.equal(storedParameters.size, 0);
@@ -133,7 +139,7 @@ describe("classifySamples", () => {
     const values = { ph: 7, Temperature: 27, toString: 1, temperature: 28 } as Record<string, number>;
     // "__proto__" as an own key, the way JSON.parse would produce it.
     Object.defineProperty(values, "__proto__", { value: 2, enumerable: true, configurable: true, writable: true });
-    const { rows, rejected, storedParameters } = classifySamples(device, [{ values }], R);
+    const { rows, rejected, storedParameters } = classifySamples(device, [{ recordedAt: R, values }], R);
 
     assert.deepEqual(
       rows.map((r) => [r.parameter, r.value]),
@@ -154,14 +160,14 @@ describe("classifySamples", () => {
   describe("bounds", () => {
     for (const value of [-5, 60]) {
       test(`${value} is accepted`, () => {
-        const { rows, rejected } = classifySamples(device, [{ values: { temperature: value } }], R);
+        const { rows, rejected } = classifySamples(device, [{ recordedAt: R, values: { temperature: value } }], R);
         assert.equal(rejected.length, 0);
         assert.equal(rows[0]!.value, value);
       });
     }
     for (const value of [-5.01, 60.01]) {
       test(`${value} is rejected`, () => {
-        const { rows, rejected, storedParameters } = classifySamples(device, [{ values: { temperature: value } }], R);
+        const { rows, rejected, storedParameters } = classifySamples(device, [{ recordedAt: R, values: { temperature: value } }], R);
         assert.equal(rows.length, 0);
         assert.equal(storedParameters.size, 0);
         assert.deepEqual(rejected, [{ recordedAt: R, parameter: "temperature", value, reason: "outside -5..60" }]);
@@ -182,7 +188,7 @@ describe("classifySamples — turbidity (NTU)", () => {
 
   for (const value of [TB.min, 25, 3000, TB.max]) {
     test(`${value} NTU is accepted`, () => {
-      const { rows, rejected } = classifySamples(device, [{ values: { turbidity: value } }], R);
+      const { rows, rejected } = classifySamples(device, [{ recordedAt: R, values: { turbidity: value } }], R);
       assert.equal(rejected.length, 0);
       assert.deepEqual(rows, [
         { pondId: "p1", deviceId: "d1", parameter: "turbidity", value, recordedAt: R, receivedAt: R },
@@ -192,7 +198,7 @@ describe("classifySamples — turbidity (NTU)", () => {
 
   for (const value of [-0.01, 4000.01]) {
     test(`${value} NTU is rejected`, () => {
-      const { rows, rejected, storedParameters } = classifySamples(device, [{ values: { turbidity: value } }], R);
+      const { rows, rejected, storedParameters } = classifySamples(device, [{ recordedAt: R, values: { turbidity: value } }], R);
       assert.equal(rows.length, 0);
       assert.equal(storedParameters.size, 0);
       assert.deepEqual(rejected, [{ recordedAt: R, parameter: "turbidity", value, reason: "outside 0..4000" }]);
@@ -202,7 +208,7 @@ describe("classifySamples — turbidity (NTU)", () => {
   test("temperature + turbidity in one sample store two rows", () => {
     const { rows, rejected, storedParameters } = classifySamples(
       device,
-      [{ values: { temperature: 27, turbidity: 12 } }],
+      [{ recordedAt: R, values: { temperature: 27, turbidity: 12 } }],
       R,
     );
     assert.equal(rejected.length, 0);
@@ -217,7 +223,7 @@ describe("classifySamples — turbidity (NTU)", () => {
   });
 
   test("turbidity-only sample (temperature probe unplugged) is stored", () => {
-    const { rows, rejected, storedParameters } = classifySamples(device, [{ values: { turbidity: 12 } }], R);
+    const { rows, rejected, storedParameters } = classifySamples(device, [{ recordedAt: R, values: { turbidity: 12 } }], R);
     assert.equal(rejected.length, 0);
     assert.equal(rows.length, 1);
     assert.equal(rows[0]!.parameter, "turbidity");
@@ -227,7 +233,7 @@ describe("classifySamples — turbidity (NTU)", () => {
   test("null turbidity beside a temperature is dropped silently", () => {
     const { rows, rejected, storedParameters } = classifySamples(
       device,
-      [{ values: { temperature: 27, turbidity: null } }],
+      [{ recordedAt: R, values: { temperature: 27, turbidity: null } }],
       R,
     );
     assert.equal(rejected.length, 0);
@@ -241,7 +247,7 @@ describe("classifySamples — turbidity (NTU)", () => {
   test("an out-of-bounds turbidity does not drop the temperature in the same sample", () => {
     const { rows, rejected, storedParameters } = classifySamples(
       device,
-      [{ values: { temperature: 27, turbidity: -5 } }],
+      [{ recordedAt: R, values: { temperature: 27, turbidity: -5 } }],
       R,
     );
     assert.deepEqual(
@@ -277,7 +283,7 @@ describe("classifySamples — turbidity (NTU)", () => {
   });
 
   test("an unknown parameter beside turbidity is rejected while turbidity is stored", () => {
-    const { rows, rejected, storedParameters } = classifySamples(device, [{ values: { ph: 7, turbidity: 12 } }], R);
+    const { rows, rejected, storedParameters } = classifySamples(device, [{ recordedAt: R, values: { ph: 7, turbidity: 12 } }], R);
     assert.deepEqual(
       rows.map((r) => [r.parameter, r.value]),
       [["turbidity", 12]],
@@ -288,7 +294,7 @@ describe("classifySamples — turbidity (NTU)", () => {
 });
 
 describe("deriveDeviceEvents", () => {
-  const baseSample = [{ values: { temperature: 27 } }];
+  const baseSample = [{ recordedAt: R, values: { temperature: 27 } }];
   const diag = (uptimeS: number, resetReason: "power_on" | "brownout" = "power_on") => ({
     rssi: -60,
     uptimeS,
@@ -382,5 +388,52 @@ describe("deriveDeviceEvents", () => {
         ["SENSOR_FAULT", "temperature"],
       ],
     );
+  });
+});
+
+describe("deviceStateUpdate", () => {
+  const MIN_MS = 60_000;
+  const one = (recordedAt: Date) => [{ recordedAt, values: { temperature: 27 } }];
+
+  test("first-ever message: lastSeenAt is the signed sample time, self-report applied", () => {
+    assert.deepEqual(deviceStateUpdate({ lastSeenAt: null }, one(at(-2_000)), R), {
+      lastSeenAt: at(-2_000),
+      newestSampleAt: at(-2_000),
+      applySelfReport: true,
+    });
+  });
+
+  test("fresh live message advances lastSeenAt to its recordedAt", () => {
+    const result = deviceStateUpdate({ lastSeenAt: at(-MIN_MS) }, one(at(-1_000)), R);
+    assert.equal(result.lastSeenAt.getTime(), at(-1_000).getTime());
+    assert.equal(result.applySelfReport, true);
+  });
+
+  test("a replayed 10-minute-old message leaves lastSeenAt alone and skips the self-report", () => {
+    const stored = at(-2 * MIN_MS);
+    const result = deviceStateUpdate({ lastSeenAt: stored }, one(at(-10 * MIN_MS)), R);
+    assert.equal(result.lastSeenAt, stored);
+    assert.equal(result.applySelfReport, false);
+  });
+
+  test("re-delivery of the newest message (same time) is not older, so it still applies", () => {
+    const stored = at(-MIN_MS);
+    assert.equal(deviceStateUpdate({ lastSeenAt: stored }, one(stored), R).applySelfReport, true);
+  });
+
+  test("backlog flush: the newest sample in the batch decides, not the first", () => {
+    const samples = [at(-90 * MIN_MS), at(-30_000), at(-60 * MIN_MS)].map((recordedAt) => ({
+      recordedAt,
+      values: { temperature: 27 },
+    }));
+    const result = deviceStateUpdate({ lastSeenAt: at(-120 * MIN_MS) }, samples, R);
+    assert.equal(result.lastSeenAt.getTime(), at(-30_000).getTime());
+    assert.equal(result.applySelfReport, true);
+  });
+
+  test("a sample slightly in the future (within skew) is clamped to receivedAt", () => {
+    const result = deviceStateUpdate({ lastSeenAt: at(-MIN_MS) }, one(at(2 * MIN_MS)), R);
+    assert.equal(result.lastSeenAt.getTime(), R.getTime());
+    assert.equal(result.newestSampleAt.getTime(), R.getTime());
   });
 });

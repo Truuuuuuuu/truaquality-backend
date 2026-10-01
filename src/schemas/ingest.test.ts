@@ -7,7 +7,9 @@ import { ingestSchema } from "./ingest.ts";
 const NOW = Date.parse("2030-01-01T00:00:00Z");
 const SKEW_MS = 5 * 60 * 1000;
 
-const sample = { values: { temperature: 27 } };
+// A past timestamp, so fixtures that don't freeze the clock never trip the future-skew refine.
+const RECORDED_AT = "2020-01-01T00:00:00Z";
+const sample = { recordedAt: RECORDED_AT, values: { temperature: 27 } };
 const samples = (n: number) => Array.from({ length: n }, () => sample);
 
 describe("ingestSchema", () => {
@@ -108,23 +110,27 @@ describe("ingestSchema", () => {
   describe("values", () => {
     test("a string value rejects the whole message", () => {
       const result = ingestSchema.safeParse({
-        samples: [sample, { values: { temperature: "27.5" } }],
+        samples: [sample, { recordedAt: RECORDED_AT, values: { temperature: "27.5" } }],
       });
       assert.equal(result.success, false);
     });
     test("a null value is accepted", () => {
-      const parsed = ingestSchema.parse({ samples: [{ values: { temperature: null } }] });
+      const parsed = ingestSchema.parse({ samples: [{ recordedAt: RECORDED_AT, values: { temperature: null } }] });
       assert.equal(parsed.samples[0]!.values.temperature, null);
     });
   });
 
   describe("recordedAt", () => {
+    test("a sample without recordedAt is rejected (a replay must not borrow the receive time)", () => {
+      assert.equal(ingestSchema.safeParse({ samples: [{ values: { temperature: 27 } }] }).success, false);
+    });
+
     test("offset timestamp is accepted and parsed to the same instant", (t) => {
       t.mock.timers.enable({ apis: ["Date"], now: NOW });
       const parsed = ingestSchema.parse({
         samples: [{ recordedAt: "2030-01-01T08:00:00+08:00", values: { temperature: 27 } }],
       });
-      assert.equal(parsed.samples[0]!.recordedAt!.getTime(), NOW);
+      assert.equal(parsed.samples[0]!.recordedAt.getTime(), NOW);
     });
 
     test("now + 5 min is accepted", (t) => {
