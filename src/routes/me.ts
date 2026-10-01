@@ -49,6 +49,9 @@ meRouter.delete("/", loginRateLimit, validate(deleteAccountSchema), async (req, 
         email: `deleted-${id}@deleted.invalid`,
       },
     });
+    // The real address is deliberately kept in the audit metadata even though the profile above is scrubbed: the
+    // audit trail of a government system has to say who removed their own account, and once the profile row is
+    // anonymised this entry is the only record of it. (Reviewed in the security audit, finding S7.)
     await logAudit(
       { actorId: id, action: "user.delete_self", targetType: "profile", targetId: id, metadata: { email } },
       tx,
