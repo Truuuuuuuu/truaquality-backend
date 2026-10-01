@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 // Opaque keyset-pagination cursor for GET /notifications, same idea as readingsCursor.ts: the last row's
 // (createdAt, id), so a page resumes with `createdAt < X OR (createdAt = X AND id < idX)` even while new
 // notifications keep arriving at the top.
@@ -13,7 +15,9 @@ export function decodeNotificationsCursor(value: string): NotificationsCursor | 
   try {
     const [iso, id] = Buffer.from(value, "base64url").toString("utf8").split("|");
     const createdAt = new Date(iso ?? "");
-    if (!iso || Number.isNaN(createdAt.getTime()) || !id) return null;
+    // The id column is @db.Uuid: a non-UUID id would reach Postgres as a failed ::uuid cast and surface as a 500,
+    // so a tampered cursor is rejected here and the route answers 400.
+    if (!iso || Number.isNaN(createdAt.getTime()) || !id || !z.uuid().safeParse(id).success) return null;
     return { createdAt, id };
   } catch {
     return null;

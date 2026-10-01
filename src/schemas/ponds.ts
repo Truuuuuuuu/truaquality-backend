@@ -33,11 +33,24 @@ export const readingsPageQuery = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
 });
 
-export const seriesQuery = z.object({
-  parameter: z.enum(PARAMETER_IDS).optional(),
-  from: isoDate,
-  to: isoDate.optional(),
-});
+// The longest range /series, /analysis and the hourly export will cover. Without a cap, `from=1970-01-01` made
+// /analysis aggregate the pond's whole history twice (the range and the equal-length period before it) on every
+// request. Two years is the longest window the dashboard offers with room to spare. Lives here (Prisma-free) so
+// readingsExport.ts can share it instead of keeping its own copy that could drift.
+export const MAX_RANGE_MS = 2 * 365 * 24 * 60 * 60 * 1000;
+export const MAX_RANGE_MESSAGE = "range is limited to 2 years";
+
+// /series and /analysis. `to` defaults to now, so an open-ended range is measured to now.
+export const seriesQuery = z
+  .object({
+    parameter: z.enum(PARAMETER_IDS).optional(),
+    from: isoDate,
+    to: isoDate.optional(),
+  })
+  .refine((query) => (query.to ?? new Date()).getTime() - query.from.getTime() <= MAX_RANGE_MS, {
+    message: MAX_RANGE_MESSAGE,
+    path: ["from"],
+  });
 
 export const readingsExportQuery = z.object({
   parameter: z.enum(PARAMETER_IDS).optional(),

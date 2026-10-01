@@ -20,6 +20,10 @@ const SERIES_HOURLY_MAX_RANGE_MS = 92 * 24 * 60 * 60 * 1000;
 // over every legitimate query while stopping one request from trying to page the whole table.
 const SERIES_MAX_POINTS = 20_000;
 
+// The day-resolution query had no row cap at all. The routes now refuse ranges over 2 years (schemas/ponds.ts),
+// which is at most ~731 days x a handful of parameters; 5000 is a backstop above that for any other caller.
+const SERIES_DAY_MAX_ROWS = 5000;
+
 // A chart-ready series over an arbitrary range. Picks its own resolution — raw for a short, recent range;
 // hourly (ReadingHourly) once the range would mean too many raw points or reaches past raw retention; daily
 // once it would mean too many hourly points. Shared by /series, /analysis and the export so all read the same points.
@@ -86,6 +90,7 @@ export async function loadSeries(
     WHERE "pondId" = ${pondId}::uuid AND "bucketStart" >= ${from} AND "bucketStart" <= ${end} ${parameterFilter}
     GROUP BY "parameter", bucket
     ORDER BY bucket ASC
+    LIMIT ${SERIES_DAY_MAX_ROWS}
   `;
   return {
     resolution: "day",

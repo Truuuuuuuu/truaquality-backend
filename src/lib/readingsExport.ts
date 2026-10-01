@@ -6,6 +6,7 @@ import { PARAMETER_DISPLAY, PARAMETER_IDS, type ParameterId } from "./parameters
 import type { PondAnalysis } from "./pondAnalysis.ts";
 import { prisma } from "./prisma.ts";
 import { rawRetentionDays } from "./readingRollup.ts";
+import { MAX_RANGE_MS } from "../schemas/ponds.ts";
 
 // Backs GET /ponds/:id/readings/export (routes/ponds.ts). Streams a formatted .xlsx workbook of a pond's
 // readings — one column per parameter, one row per timestamp, bordered header/data cells, real numeric
@@ -13,7 +14,6 @@ import { rawRetentionDays } from "./readingRollup.ts";
 // text. Built with exceljs's streaming WorkbookWriter so a large export doesn't sit in memory.
 
 const EXPORT_RAW_MAX_RANGE_MS = 31 * 24 * 60 * 60 * 1000;
-const EXPORT_HOURLY_MAX_RANGE_MS = 2 * 365 * 24 * 60 * 60 * 1000;
 const EXPORT_CHUNK_SIZE = 5000;
 
 export type ExportResolution = "raw" | "hour";
@@ -32,7 +32,7 @@ export function validateExportRange(from: Date, to: Date, resolution: ExportReso
     }
     return null;
   }
-  if (rangeMs > EXPORT_HOURLY_MAX_RANGE_MS) {
+  if (rangeMs > MAX_RANGE_MS) {
     return "export is limited to a 2 year range";
   }
   return null;
