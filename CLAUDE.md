@@ -16,7 +16,10 @@ one.
 
 Current surface area:
 - `/health`, `/health/db`
-- `/auth/login`, `/auth/refresh`, `/auth/logout`
+- `/auth/login`, `/auth/refresh`, `/auth/logout` — login/refresh return only `{ session: { access_token,
+  refresh_token, expires_at } }` (never Supabase's user object) and generic errors: 401 `invalid email or password` /
+  `invalid or expired session`, 403 `account disabled` (banned in Supabase), 502 for upstream failure (no status,
+  429, 5xx). The real Supabase error is only logged (`[auth]`). See `SECURITY_PERFORMANCE_AUDIT.md` S4.
 - `/me` (protected): `GET` own profile, `DELETE` own account (password-confirmed, see "Identity model")
 - `/ponds`, `/ponds/:id`, `/ponds/:id/readings` (paginated), `/ponds/:id/series`, `/ponds/:id/analysis`,
   `/ponds/:id/readings/export` (.xlsx), `/devices` (protected, any role)
@@ -251,7 +254,8 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
   - Each message is `v1.<hex HMAC-SHA256>.<JSON body>`, with the HMAC over `<topic>\n<body>`
     (`src/lib/deviceMessages.ts`). The firmware (`firmware/lib/Uplink`) and the simulator must match it
     exactly.
-  - The body is `{firmwareVersion, wifiSsid?, diag?, sensors?, samples}`; key order is signed bytes. `wifiSsid` is
+  - The body is `{firmwareVersion, wifiSsid?, diag?, sensors?, samples}`; key order is signed bytes. Every sample's
+    `recordedAt` is **required** — it is the only timestamp a replay can't fake (see "Liveness" below). `wifiSsid` is
     per message, optional (firmware < 0.5.0 omits it), and stored on `Device.wifiSsid` only when non-empty.
   - `diag` and `sensors` (firmware >= 0.6.0, both optional; older units omit them and their stored values are left
     untouched):
@@ -266,19 +270,29 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
       over_range` (turbidity). A sensor whose status isn't `ok` has its value omitted from the sample. Keys are a
       bounded id regex (max 8), not `PARAMETER_IDS`, so a sensor reported before it's a known parameter never
       rejects the whole signed message.
-    - `Device.diagnosticsAt` is the receive time of the last message carrying either.
+    - `Device.diagnosticsAt` is the newest signed sample time of the last applied message carrying either.
   - **Secrets are derived, not stored** (`src/lib/deviceSecrets.ts`): HMAC(`DEVICE_SECRET_MASTER_KEY`,
     `device-secret:<id>:<secretVersion>`).
     - Rotating a device bumps `secretVersion`.
     - Changing the master key invalidates every unit at once, so every unit must be reflashed.
     - The API returns credentials only from `POST /admin/devices` and `POST /admin/devices/:id/rotate-secret`.
-  - Order in `readingsSubscriber.ts`: parse the topic, look up the device, **verify the signature**, check it
-    isn't disabled, rate limit (30 messages/min per device, counted only after verification), validate, then
-    ingest. Nothing, not even `lastSeenAt`, is written for an unverified message. Dropped messages are logged
-    with a reason.
+  - Order in `readingsSubscriber.ts`: parse the topic and the `v1.` envelope synchronously, then **enqueue** the
+    rest on a bounded keyed queue (`src/lib/messageQueue.ts`: 4 workers, 5000 waiting, one job per device at a time,
+    in arrival order). The queued job looks up the device, **verifies the signature**, checks it isn't disabled,
+    validates, rate-limits (30 *live* messages/min per device — newest sample within 5 min — counted only after
+    verification; a backlog batch is never counted), then ingests. Nothing, not even `lastSeenAt`, is written for an
+    unverified message. A message is dropped only when the queue is full (logged `ingest queue full`); there is
+    no global per-minute drop any more, so a reconnect burst is drained, not discarded. Dropped messages are
+    logged with a reason. See `SECURITY_PERFORMANCE_AUDIT.md` P1.
   - Anyone with the shared broker credential can *read* every unit's readings (the topics aren't
-    confidential), but can't forge them. Replaying a captured message is harmless: duplicates are skipped, and
-    samples older than `Device.assignedAt` are refused.
+    confidential), but can't forge them. Replaying a captured message is harmless: duplicates are skipped,
+    samples older than `Device.assignedAt` are refused, and it can't fake liveness (below).
+  - **Liveness comes from signed sample time** (`deviceStateUpdate` in `src/lib/ingestRules.ts`):
+    `lastSeenAt` = newest sample `recordedAt` in the message, clamped to the receive time, and it never moves
+    backwards. The self-report (firmwareVersion, wifiSsid, diag, sensors) and derived device events are applied
+    only when the message's newest sample is not older than the stored `lastSeenAt`; an older message (a replay, or
+    an out-of-order backlog batch) still has its readings stored but changes nothing else. See
+    `SECURITY_PERFORMANCE_AUDIT.md` S1.
 - **Reading history: raw rows for a rolling window, hourly summaries forever.** `Reading` holds per-minute
   rows but is pruned past `RAW_RETENTION_DAYS` (env, default 30, floor `MAX_SAMPLE_AGE_MS`'s 7 days + 1 so
   nothing is pruned before it's had a chance to be finalized in a rollup). `ReadingHourly` holds one
@@ -316,7 +330,9 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
   - `GET /ponds/:id/readings` is keyset-paginated (`before` cursor from `nextCursor`, encoded in
     `src/lib/readingsCursor.ts`), not `from`/`to` + `limit` — an offset or a full-range fetch doesn't scale
     once history spans months. `GET /ponds/:id/series` answers a chart over an arbitrary range and picks its
-    own resolution (raw / hourly / daily) based on how wide the range is. `GET /ponds/:id/readings/export`
+    own resolution (raw / hourly / daily) based on how wide the range is. `/series` and `/analysis` refuse a range
+    over 2 years (400 `range is limited to 2 years`, `MAX_RANGE_MS` in `src/schemas/ponds.ts`, shared with the
+    hourly export's limit), and the daily query has a `LIMIT 5000` backstop. `GET /ponds/:id/readings/export`
     streams a formatted `.xlsx` workbook of either (via `exceljs`'s streaming `WorkbookWriter`, so a large
     export doesn't sit in memory), for reporting outside the app — one column per parameter, one row per
     timestamp, bordered header/data cells, and real numeric cells carrying a custom number format that shows
@@ -466,4 +482,5 @@ production.
 - Finer-grained roles for pond/device management (today: any signed-in user reads, only `ADMIN` writes).
 - No CI yet; `npm test` must be run locally.
 - `readingsSubscriber.handleReadingsMessage` (signature-before-lastSeenAt ordering, rate limit) is not yet
-  unit-tested; it needs extracting from the module that reads `MQTT_*` at import.
+  unit-tested; it needs extracting from the module that reads `MQTT_*` at import. Its parts are: the queue
+  (`messageQueue.test.ts`) and the liveness rule (`deviceStateUpdate` in `ingestRules.test.ts`, `ingest.test.ts`).
