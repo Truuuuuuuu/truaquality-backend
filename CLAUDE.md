@@ -199,7 +199,7 @@ resolution of `tsc`/`tsx`/`ts-node`:
 - `npm run simulate:devices -- --device <deviceId>:<deviceSecret> [--device ...] [--interval 60] [--no-turbidity] [--turbidity <ntu>] [--temperature <°C>]`
   (`scripts/simulate-devices.ts`) is **dev only**: it publishes synthetic, correctly signed readings to the
   MQTT broker as if it were ESP32 units, so the multi-pond UI can be tested before hardware is installed. Never
-  point it at a production broker. Every message carries integer `diag` and a `sensors` map like firmware 0.6.0;
+  point it at a production broker. Every message carries integer `diag` and a `sensors` map in the 0.6.x wire shape;
   `--fault <parameter>=<status>` (repeatable, status validated against `SENSOR_STATUSES`) reports that sensor with
   that status and omits its value, to demo a SENSOR_FAULT (restart without it to see SENSOR_RECOVERED). Each unit
   reports temperature then turbidity (0.1 NTU steps, drifting 0..60 NTU across the 25 NTU safe line to demo a
@@ -380,8 +380,11 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
   `src/lib/parameters.ts` is keyed by `FRESHWATER` / `BRACKISH` / `SALTWATER` / `UNSET` (for a pond whose
   `pondType` is still null), because a single global salinity range once made every freshwater pond
   permanently `CRITICAL`. Salinity (and dissolved oxygen) have since been removed — temperature and turbidity are
-  the parameters (turbidity added in Phase 4: safeMax 25 NTU from BFAR, criticalMax `TURBIDITY_CRITICAL_MAX_NTU`
-  pending BFAR, no low-side band) — so every profile points at the same `SHARED` table; a parameter
+  the parameters (turbidity added in Phase 4: safeMax 25 NTU from BFAR (BFAR Sorsogon (client agency), "Turbidity
+  Aquaculture <25 NTU" reference), criticalMax `TURBIDITY_CRITICAL_MAX_NTU` = 3000 pending BFAR with
+  `criticalPending: true` so turbidity is warning-only, no low-side band; turbidity bounds 0..4000 NTU in
+  `PARAMETER_BOUNDS` — the firmware clamps to 0..3000 and omits the value on a fault, so 4000 is headroom for
+  a curve refit) — so every profile points at the same `SHARED` table; a parameter
   whose safe range does depend on pond type overrides it per profile. Resolve with `thresholdsFor(pondType)`
   and judge with `severityFor(parameter, value, pondType)`.
   - **The frontend keeps no copy.** `GET /ponds` and `GET /ponds/:id` return a resolved `thresholds` map on

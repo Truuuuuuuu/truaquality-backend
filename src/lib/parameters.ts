@@ -52,16 +52,18 @@ const SHARED: Record<ParameterId, Threshold> = {
   // SHARED across pond types because BFAR gave one range for all of them.
   // Source: Abowei, 2010 as cited by Bantaya, 2016.
   temperature: { safeMin: 20, safeMax: 30, criticalMin: 15, criticalMax: 35.5 },
-  // Turbidity (NTU) — PROVISIONAL, pending BFAR review.
-  // - safeMax 25 NTU ("below 25 NTU is normal, above is above-normal"): [BFAR document — citation to be supplied].
+  // Turbidity (NTU) — 25 NTU warning line sourced from BFAR; critical line still pending BFAR.
+  // - safeMax 25 NTU ("below 25 NTU is normal, above is above-normal"): from BFAR Sorsogon, the client agency.
+  //   Source: BFAR Sorsogon (client agency), "Turbidity Aquaculture <25 NTU" reference (no title or year given).
   //   NTU-native; not derived from Secchi depth.
   // - criticalMax: PENDING BFAR — see TURBIDITY_CRITICAL_MAX_NTU (warning-only in the field until supplied).
   // - No low-side band (safeMin = criticalMin = 0 = bounds.min): clear water reads near 0 NTU and must never
   //   alert (ALRT-03); a low band above 0 would open an episode that could never resolve, as salinity once did.
   // - BFAR's ~0.5 m Secchi transparency guidance is a separate reference for pond managers, not a conversion
   //   source: no NTU number here comes from Secchi depth.
-  // - Sensor caveat: NTU is a vendor-curve estimate (no reference turbidimeter yet); the bench noise-floor check
-  //   against 25 NTU is pending (see .planning/phases/04-backend-turbidity-ingest-alerts/04-TURBIDITY-THRESHOLDS.md).
+  // - Sensor caveat: NTU is a vendor-curve estimate (no reference turbidimeter yet). The clean-water noise floor was
+  //   checked against 25 NTU on the bench (.planning/phases/03-turbidity-sensor-read-bench-characterization/
+  //   03-BENCH-RECORD.md) and on the unit (TURBIDITY_TEST_RESULTS.md §5e/§5f).
   turbidity: { safeMin: 0, safeMax: 25, criticalMin: 0, criticalMax: TURBIDITY_CRITICAL_MAX_NTU, criticalPending: true },
 };
 
