@@ -64,9 +64,30 @@ const SHARED: Record<ParameterId, Threshold> = {
   // - Sensor caveat: NTU is a vendor-curve estimate (no reference turbidimeter yet). The clean-water noise floor is
   //   recorded on the bench (.planning/phases/03-turbidity-sensor-read-bench-characterization/03-BENCH-RECORD.md:
   //   that rig could not resolve 25 NTU in clear water) and on the unit (TURBIDITY_TEST_RESULTS.md §5e: 85 clean
-  //   readings, none above 25 NTU, firmware 0.6.1); the 30-minute dashboard soak is §5f.
+  //   readings, none above 25 NTU, firmware 0.6.1). The 30-minute dashboard soak (§5f) did NOT hold: 7 of 58
+  //   clean-water readings spiked above 25 NTU (max 135.8), and a run of 3 opened a false WARNING. The 25 NTU line
+  //   stays; single spikes are absorbed by ALERT_HOLD_READINGS below instead, and the re-soak with that hold rule is
+  //   TURBIDITY_TEST_RESULTS.md §5h.
   turbidity: { safeMin: 0, safeMax: 25, criticalMin: 0, criticalMax: TURBIDITY_CRITICAL_MAX_NTU, criticalPending: true },
 };
+
+// How many consecutive out-of-range readings a parameter needs before it counts as out of range — for opening or
+// worsening an alert (alertRules.heldSeverityFor) and for the dashboard color GET /ponds serves. Shared across pond
+// types (not part of ThresholdProfile) and server-owned, so the frontend never knows the count.
+// - turbidity 4: the §5f soak (TURBIDITY_TEST_RESULTS.md, 2026-10-03) saw 7 of 58 clean-water readings above 25 NTU
+//   in short runs, the longest 3 in a row, and that run opened a false WARNING. N = 3 would still have opened it;
+//   4 suppresses every clean-water run seen in the whole session, while real turbid water (cornstarch: runs of 11
+//   and 24) still alerts. At the firmware's 30 s report interval that is about 2 minutes, and pond turbidity
+//   changes over minutes to hours, so the delay costs nothing that matters.
+// - temperature 1: the DS18B20 has shown no such spikes and a temperature alert must stay immediate.
+export const ALERT_HOLD_READINGS: Record<ParameterId, number> = { temperature: 1, turbidity: 4 };
+
+// Two readings further apart than this break a held run. A sensor fault sends no value (no Reading row) and an
+// offline unit sends nothing, so a fault or an outage shows up only as a gap in time; without this, four spikes
+// spread over an hour would count as "consecutive". 90 s tolerates one lost report at the firmware's 30 s interval
+// (and the simulator's default 60 s) and breaks on two or more. A backend constant: the backend never reads the
+// firmware's REPORT_INTERVAL_MS.
+export const ALERT_HOLD_MAX_GAP_MS = 90_000;
 
 // Safe/critical ranges that raise alerts (lib/alerts.ts). Unlike PARAMETER_BOUNDS, a value outside these is a
 // real reading worth acting on, not garbage. The frontend no longer keeps a copy — it reads the resolved
