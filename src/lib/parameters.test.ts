@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
+  ALERT_HOLD_MAX_GAP_MS,
+  ALERT_HOLD_READINGS,
   PARAMETER_BOUNDS,
   PARAMETER_DISPLAY,
   PARAMETER_IDS,
@@ -201,5 +203,18 @@ describe("turbidity (NTU) — BFAR safeMax 25, criticalMax PENDING BFAR", () => 
     }
     const d = PARAMETER_DISPLAY.turbidity;
     assert.equal(`0.${"0".repeat(d.precision)}" ${d.unit}"`, '0.0" NTU"');
+  });
+});
+
+describe("alert hold (Phase 7 gap closure)", () => {
+  test("P-22: ALERT_HOLD_READINGS has an integer >= 1 per parameter (temperature 1, turbidity 4); gap 90 s", () => {
+    for (const id of PARAMETER_IDS) {
+      const hold = ALERT_HOLD_READINGS[id];
+      assert.ok(Number.isInteger(hold) && hold >= 1, `${id}: hold ${hold}`);
+    }
+    assert.deepEqual(Object.keys(ALERT_HOLD_READINGS).sort(), [...PARAMETER_IDS].sort());
+    assert.equal(ALERT_HOLD_READINGS.temperature, 1);
+    assert.equal(ALERT_HOLD_READINGS.turbidity, 4);
+    assert.equal(ALERT_HOLD_MAX_GAP_MS, 90_000);
   });
 });
