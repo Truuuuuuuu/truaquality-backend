@@ -394,6 +394,11 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
   - Each pond in `GET /ponds` / `GET /ponds/:id` also carries a top-level `sensorStatus` map: the assigned unit's
     latest per-sensor status tokens (strings only, via `reportedStatuses` in `src/lib/devices.ts`; `{}` with no
     device or no report). The raw `Device.sensorStatus` Json is stripped from `pond.device`.
+  - Each pond in `GET /ponds` / `GET /ponds/:id` also carries `heldSeverity`: per parameter present in `latest`,
+    `"WARNING"`, `"CRITICAL"` or `null` (in range, or out of range but not yet held), computed by
+    `heldSeveritiesFor` (`src/lib/alertRules.ts`) from that pond's last `ALERT_HOLD_READINGS[parameter]` readings.
+    The dashboard colors tiles and the pond status by it, so a tile turns amber exactly when the alert would open
+    and the frontend never knows the hold count. `latest` and `thresholds` are unchanged.
     `GET /notifications` likewise computes each row's `direction` (`"low"`/`"high"`) server-side.
 - **Alerts and notifications** (`src/lib/alerts.ts`). After ingest stores new readings, `evaluatePondAlerts()`
   reads the pond's `pondType` once, then re-checks each touched parameter against that type's thresholds.
@@ -414,9 +419,20 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
     order.
   - Each evaluation runs in a transaction holding `pg_advisory_xact_lock(hashtext('alert:<pond>:<parameter>'))`,
     because MQTT messages are handled concurrently and two must not both open an alert.
+  - **Hold rule (Phase 7 gap closure).** `ALERT_HOLD_READINGS` in `parameters.ts` (temperature 1, turbidity 4, about
+    2 min at the 30 s report interval) is how many consecutive out-of-range readings it takes to open or worsen an
+    episode; `ALERT_HOLD_MAX_GAP_MS` (90 s) between two neighbouring readings breaks the run. The window's severity
+    is the least severe of the run (C, C, C, W is WARNING). The hold delays opening/worsening only: recovery stays
+    `ALERT_RECOVERY_MS`, and an unheld out-of-range reading inside an open episode just restarts the recovery clock
+    and notifies nobody. The pure rule is `heldSeverityFor` / `heldSeveritiesFor` in `alertRules.ts`; the shell's
+    extra lookback (`tx.reading.findMany`, `take` = hold) runs only for parameters with hold > 1, so temperature
+    issues no extra query. The turbidity shell traces in `alerts.test.ts` / `ingest.test.ts` changed on purpose in
+    07-06 (they gained `tx.reading.findMany`); temperature traces are untouched.
   - A failure here is logged (`[alerts]`) and doesn't fail ingest; the readings are already stored.
-- **Latest value per parameter** (`GET /ponds`, `GET /ponds/:id`) uses a raw `LATERAL ... LIMIT 1` per
-  (pond, parameter) so it walks the `(pondId, parameter, recordedAt DESC)` index. Don't replace it with
+- **Recent values per parameter** (`GET /ponds`, `GET /ponds/:id`) uses a raw `LATERAL ... LIMIT k.lim` per
+  (pond, parameter), the limit being `ALERT_HOLD_READINGS[parameter]` passed as a second `unnest` array
+  (`::int[]`), so it walks the `(pondId, parameter, recordedAt DESC)` index; `latest` is the newest of each group
+  and `heldSeverity` is judged from the whole group. Don't replace it with
   Prisma's `distinct`, which de-duplicates in memory, or `DISTINCT ON`, which reads every row for the pond.
 - `adminPondsRouter` / `adminDevicesRouter` are mounted **inside** `adminRouter`, which already applies
   `requireAuth` + `requireAdmin`. Mounting them separately under `/admin` would run auth twice.
