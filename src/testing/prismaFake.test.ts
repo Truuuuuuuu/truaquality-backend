@@ -286,3 +286,28 @@ test("a committed transaction keeps its writes (the rollback is not unconditiona
   assert.equal(fake.alerts[0]!.severity, "CRITICAL");
   assert.equal(fake.notifications.length, 1);
 });
+
+test("tx.reading.findMany honours pondId/parameter, recordedAt.lt, newest-first order and take", async () => {
+  const fake = createPrismaFake();
+  const min = (n: number) => new Date(T0.getTime() + n * 60_000);
+  for (const [n, value] of [[2, 20], [0, 0], [3, 30], [1, 10], [4, 40]] as const) {
+    fake.readings.push({ pondId: "pond-1", deviceId: "d", parameter: "turbidity", value, recordedAt: min(n) });
+  }
+  fake.readings.push({ pondId: "pond-1", deviceId: "d", parameter: "temperature", value: 99, recordedAt: min(2) });
+  fake.readings.push({ pondId: "pond-2", deviceId: "e", parameter: "turbidity", value: 98, recordedAt: min(2) });
+
+  await fake.$transaction(async (tx) => {
+    const rows = await tx.reading.findMany({
+      where: { pondId: "pond-1", parameter: "turbidity", recordedAt: { lt: min(4) } },
+      orderBy: { recordedAt: "desc" },
+      take: 3,
+      select: { value: true, recordedAt: true },
+    });
+    assert.deepEqual(rows, [
+      { value: 30, recordedAt: min(3) },
+      { value: 20, recordedAt: min(2) },
+      { value: 10, recordedAt: min(1) },
+    ]);
+  });
+  assert.ok(fake.ops().includes("tx.reading.findMany"));
+});

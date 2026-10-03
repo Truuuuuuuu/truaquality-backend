@@ -1,6 +1,6 @@
 import { decideAlertStep, notificationKindFor, renotifyDue } from "./alertRules.ts";
 import { notifyActiveUsers } from "./notify.ts";
-import type { ParameterId } from "./parameters.ts";
+import { ALERT_HOLD_READINGS, type ParameterId } from "./parameters.ts";
 import { prisma } from "./prisma.ts";
 
 // The decision rules (open / escalate / renotify / resolve and their timing) live in alertRules.ts; this file
@@ -24,9 +24,24 @@ async function evaluateParameter(pondId: string, parameter: ParameterId, pondTyp
     if (!latest) return;
     const { value, recordedAt } = latest;
 
+    // The hold rule (ALERT_HOLD_READINGS, decided in alertRules.ts) needs the readings just before the latest:
+    // N - 1 for the held window plus one more for the previous held severity, so N rows. A LIMIT walk of the
+    // (pondId, parameter, recordedAt) index, never DISTINCT ON. Only a held parameter pays for the query, so
+    // temperature (hold 1) issues exactly the statements it did before.
+    const hold = ALERT_HOLD_READINGS[parameter];
+    const earlier =
+      hold > 1
+        ? await tx.reading.findMany({
+            where: { pondId, parameter, recordedAt: { lt: recordedAt } },
+            orderBy: { recordedAt: "desc" },
+            take: hold,
+            select: { value: true, recordedAt: true },
+          })
+        : [];
+
     const open = await tx.alert.findFirst({ where: { pondId, parameter, resolvedAt: null } });
 
-    const step = decideAlertStep(parameter, pondType, open, latest);
+    const step = decideAlertStep(parameter, pondType, open, latest, earlier);
 
     switch (step.kind) {
       case "none":

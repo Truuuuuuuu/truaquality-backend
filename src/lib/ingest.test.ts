@@ -417,6 +417,9 @@ test("mixed temperature + turbidity batch: one createMany, one pond read, one al
     "$transaction",
     "tx.$executeRaw",
     "tx.reading.findFirst",
+    // Turbidity is held (ALERT_HOLD_READINGS 4): its evaluation looks back over the earlier readings; temperature
+    // (hold 1) does not.
+    "tx.reading.findMany",
     "tx.alert.findFirst",
   ]);
 

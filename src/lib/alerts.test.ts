@@ -481,14 +481,15 @@ test("turbidity: clear water (0 NTU) opens nothing and notifies nobody", async (
 
   await evaluate(["turbidity"]);
 
-  assert.deepEqual(fake.ops(), PREFIX);
+  // Turbidity is held (ALERT_HOLD_READINGS 4), so its evaluation also looks back over the earlier readings.
+  assert.deepEqual(fake.ops(), [...PREFIX.slice(0, 4), "tx.reading.findMany", ...PREFIX.slice(4)]);
   assert.equal(fake.alerts.length, 0);
   assert.equal(fake.notifications.length, 0);
 });
 
-test("end-to-end turbidity: nominal, warning, critical, then 11 minutes of 0 NTU -> opened, escalated, resolved", async (t) => {
-  const fake = setup(t);
-  const device = {
+// A simulator-shaped unit for the turbidity sequences below.
+const turbidityDevice = () =>
+  ({
     id: DEVICE_ID,
     serial: "SIM-0001",
     hardwareModel: null,
@@ -503,25 +504,41 @@ test("end-to-end turbidity: nominal, warning, critical, then 11 minutes of 0 NTU
     offlineSince: null,
     createdAt: at(-2 * DAY),
     updatedAt: at(-2 * DAY),
-  } as Device;
+  }) as Device;
 
-  const values = [NTU_NOMINAL, NTU_WARNING, NTU_CRITICAL, ...Array.from({ length: 11 }, () => NTU_NOMINAL)];
+// Ingests one turbidity sample per entry, `stepMs` apart from T0, asserting each is stored.
+async function ingestTurbidity(values: number[], stepMs: number, device = turbidityDevice()) {
   for (const [n, value] of values.entries()) {
+    const recordedAt = at(n * stepMs);
     const result = await ingestSamples(
       device,
-      { firmwareVersion: "simulator", samples: [{ recordedAt: minute(n), values: { turbidity: value } }] },
-      minute(n),
+      { firmwareVersion: "simulator", samples: [{ recordedAt, values: { turbidity: value } }] },
+      recordedAt,
     );
     assert.deepEqual(result, { status: "stored", accepted: 1, duplicates: 0, rejected: [] });
   }
+}
+
+test("end-to-end turbidity: 0, 4 x warning, 4 x critical, then 11 minutes of 0 NTU -> held open, escalated, resolved", async (t) => {
+  const fake = setup(t);
+
+  // One reading per minute (inside ALERT_HOLD_MAX_GAP_MS). The 4th warning reading opens, the 4th critical one
+  // escalates, and recovery still takes ALERT_RECOVERY_MS of clear water.
+  const values = [
+    NTU_NOMINAL,
+    ...Array.from({ length: 4 }, () => NTU_WARNING),
+    ...Array.from({ length: 4 }, () => NTU_CRITICAL),
+    ...Array.from({ length: 11 }, () => NTU_NOMINAL),
+  ];
+  await ingestTurbidity(values, MIN);
 
   assert.equal(fake.alerts.length, 1);
   const [episode] = fake.alerts;
   assert.equal(episode.parameter, "turbidity");
   assert.equal(episode.severity, "CRITICAL");
-  assert.deepEqual(episode.openedAt, minute(1));
-  assert.deepEqual(episode.nominalSince, minute(3));
-  assert.deepEqual(episode.resolvedAt, minute(13));
+  assert.deepEqual(episode.openedAt, minute(4));
+  assert.deepEqual(episode.nominalSince, minute(9));
+  assert.deepEqual(episode.resolvedAt, minute(19));
 
   assert.deepEqual(
     fake.notifications.map((n) => n.kind),
@@ -530,9 +547,81 @@ test("end-to-end turbidity: nominal, warning, critical, then 11 minutes of 0 NTU
   assert.deepEqual(
     fake.notifications.map((n) => [n.severity, n.value, n.recordedAt, n.alertId]),
     [
-      ["WARNING", NTU_WARNING, minute(1), "alert-1"],
-      ["CRITICAL", NTU_CRITICAL, minute(2), "alert-1"],
-      ["CRITICAL", NTU_NOMINAL, minute(13), "alert-1"],
+      ["WARNING", NTU_WARNING, minute(4), "alert-1"],
+      ["CRITICAL", NTU_CRITICAL, minute(8), "alert-1"],
+      ["CRITICAL", NTU_NOMINAL, minute(19), "alert-1"],
     ],
   );
+});
+
+test("S-H1: three warning turbidity readings 30 s apart open nothing; the fourth opens WARNING", async (t) => {
+  const fake = setup(t);
+
+  await ingestTurbidity([NTU_WARNING, NTU_WARNING, NTU_WARNING], 30_000);
+  assert.equal(fake.alerts.length, 0);
+  assert.equal(fake.notifications.length, 0);
+
+  const fourth = at(3 * 30_000);
+  const result = await ingestSamples(
+    turbidityDevice(),
+    { firmwareVersion: "simulator", samples: [{ recordedAt: fourth, values: { turbidity: NTU_WARNING } }] },
+    fourth,
+  );
+  assert.deepEqual(result, { status: "stored", accepted: 1, duplicates: 0, rejected: [] });
+
+  assert.equal(fake.alerts.length, 1);
+  assert.equal(fake.alerts[0].severity, "WARNING");
+  assert.deepEqual(fake.alerts[0].openedAt, fourth);
+  assert.deepEqual(
+    fake.notifications.map((n) => [n.kind, n.severity, n.recordedAt]),
+    [["ALERT_OPENED", "WARNING", fourth]],
+  );
+});
+
+test("S-H2: the §5f-like pattern 0, W, 0, W, W, W, 0 at 30 s opens nothing", async (t) => {
+  const fake = setup(t);
+
+  await ingestTurbidity(
+    [NTU_NOMINAL, NTU_WARNING, NTU_NOMINAL, NTU_WARNING, NTU_WARNING, NTU_WARNING, NTU_NOMINAL],
+    30_000,
+  );
+
+  assert.equal(fake.alerts.length, 0);
+  assert.equal(fake.notifications.length, 0);
+});
+
+test("S-H3: an open turbidity episode in recovery, one unheld warning reading resets nominalSince and notifies nobody", async (t) => {
+  const fake = setup(t);
+  seedAlert(fake, {
+    parameter: "turbidity",
+    severity: "WARNING",
+    lastValue: NTU_NOMINAL,
+    lastRecordedAt: minute(0),
+    nominalSince: minute(-3),
+  });
+  for (let i = 6; i >= 0; i--) seedReading(fake, NTU_NOMINAL, at(-i * 30_000), "turbidity");
+  seedReading(fake, NTU_WARNING, at(30_000), "turbidity");
+
+  await evaluate(["turbidity"]);
+
+  assert.deepEqual(fake.ops(), [...PREFIX.slice(0, 4), "tx.reading.findMany", ...PREFIX.slice(4), "tx.alert.update"]);
+  assert.deepEqual(argsOf(fake, "tx.alert.update")[0].data, {
+    lastValue: NTU_WARNING,
+    lastRecordedAt: at(30_000),
+    nominalSince: null,
+  });
+  assert.equal(fake.alerts[0].severity, "WARNING");
+  assert.equal(fake.alerts[0].resolvedAt, null);
+  assert.equal(fake.notifications.length, 0);
+});
+
+test("S-H4: a temperature evaluation never looks back (hold 1, no tx.reading.findMany)", async (t) => {
+  const fake = setup(t);
+  for (const n of [0, 1, 2, 3]) seedReading(fake, 18, minute(n));
+
+  await evaluate(["temperature"]);
+  assert.ok(!fake.ops().includes("tx.reading.findMany"));
+  assert.deepEqual(fake.ops(), [...PREFIX, "tx.alert.create", "tx.profile.findMany", "tx.notification.createMany"]);
+  assert.equal(fake.alerts[0].severity, "WARNING");
+  assert.deepEqual(fake.alerts[0].openedAt, minute(3));
 });

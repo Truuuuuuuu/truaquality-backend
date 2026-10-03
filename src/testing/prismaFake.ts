@@ -184,6 +184,22 @@ export function createPrismaFake(opts: PrismaFakeOptions = {}) {
         const newest = newestBy(matches, (r) => r.recordedAt);
         return newest ? { value: newest.value, recordedAt: newest.recordedAt } : null;
       },
+      // The hold rule's lookback (alerts.ts): where pondId/parameter/recordedAt.lt, orderBy recordedAt desc, take.
+      findMany: async (args: {
+        where: Where & { recordedAt?: { lt?: Date } };
+        orderBy?: { recordedAt: "desc" };
+        take?: number;
+        select?: { value: true; recordedAt: true };
+      }) => {
+        record("tx.reading.findMany", args);
+        const lt = args.where.recordedAt?.lt;
+        const rows = readings
+          .filter((r) => r.pondId === args.where.pondId && r.parameter === args.where.parameter)
+          .filter((r) => !lt || r.recordedAt.getTime() < lt.getTime())
+          .sort((a, b) => b.recordedAt.getTime() - a.recordedAt.getTime());
+        const taken = args.take === undefined ? rows : rows.slice(0, args.take);
+        return taken.map((r) => ({ value: r.value, recordedAt: new Date(r.recordedAt.getTime()) }));
+      },
     },
     // Every delegate returns a DETACHED copy, because real Prisma returns a snapshot of the row as it
     // was read. Handing back the stored object instead made read-after-write bugs invisible: alerts.ts
