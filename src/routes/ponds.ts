@@ -1,8 +1,9 @@
 import { Router } from "express";
 import type { z } from "zod";
-import { Prisma } from "../generated/prisma/client.ts";
+import { Prisma, type AlertSeverity } from "../generated/prisma/client.ts";
 import { deviceSummarySelect, reportedStatuses } from "../lib/devices.ts";
-import { PARAMETER_IDS, thresholdsFor } from "../lib/parameters.ts";
+import { heldSeveritiesFor, type HeldReading } from "../lib/alertRules.ts";
+import { ALERT_HOLD_READINGS, isParameterId, PARAMETER_IDS, type ParameterId, thresholdsFor } from "../lib/parameters.ts";
 import { prisma } from "../lib/prisma.ts";
 import { analyzePondRange, loadSeries } from "../lib/pondAnalysis.ts";
 import { streamReadingsExport, validateExportRange } from "../lib/readingsExport.ts";
@@ -18,34 +19,63 @@ export const pondsRouter = Router();
 pondsRouter.use(requireAuth);
 
 type LatestReading = { value: number; recordedAt: Date };
-type LatestRow = LatestReading & { pondId: string; parameter: string };
+type RecentRow = LatestReading & { pondId: string; parameter: string };
+type PondRecent = Partial<Record<ParameterId, HeldReading[]>>;
 
-// Latest value of every parameter for each pond. A LATERAL ... LIMIT 1 per (pond, parameter) walks the
-// (pondId, parameter, recordedAt DESC) index straight to the newest row, so it stays fast as history grows
-// — unlike DISTINCT ON, which reads every row for the pond.
-async function latestReadingsByPond(pondIds: string[]) {
-  const byPond = new Map<string, Record<string, LatestReading>>();
+// The most recent ALERT_HOLD_READINGS[parameter] readings of every parameter for each pond (1 for temperature, 4
+// for turbidity). A LATERAL ... LIMIT k.lim per (pond, parameter) walks the (pondId, parameter, recordedAt DESC)
+// index straight to the newest rows, so it stays fast as history grows — unlike DISTINCT ON, which reads every row
+// for the pond. The per-parameter limit rides in a second unnest array (`::int[]`) so the query count is unchanged.
+async function recentReadingsByPond(pondIds: string[]) {
+  const byPond = new Map<string, PondRecent>();
   if (pondIds.length === 0) return byPond;
 
-  const rows = await prisma.$queryRaw<LatestRow[]>`
+  const limits = PARAMETER_IDS.map((id) => ALERT_HOLD_READINGS[id]);
+  const rows = await prisma.$queryRaw<RecentRow[]>`
     SELECT p.id AS "pondId", k.parameter, r.value, r."recordedAt"
     FROM unnest(${pondIds}::uuid[]) AS p(id)
-    CROSS JOIN unnest(${PARAMETER_IDS}::text[]) AS k(parameter)
+    CROSS JOIN unnest(${PARAMETER_IDS}::text[], ${limits}::int[]) AS k(parameter, lim)
     CROSS JOIN LATERAL (
       SELECT value, "recordedAt"
       FROM "Reading"
       WHERE "pondId" = p.id AND parameter = k.parameter
       ORDER BY "recordedAt" DESC
-      LIMIT 1
+      LIMIT k.lim
     ) r
   `;
 
   for (const row of rows) {
-    const latest = byPond.get(row.pondId) ?? {};
-    latest[row.parameter] = { value: row.value, recordedAt: row.recordedAt };
-    byPond.set(row.pondId, latest);
+    if (!isParameterId(row.parameter)) continue;
+    const recent = byPond.get(row.pondId) ?? {};
+    (recent[row.parameter] ??= []).push({ value: row.value, recordedAt: row.recordedAt });
+    byPond.set(row.pondId, recent);
+  }
+  // LATERAL output order is not guaranteed, so put each group newest first before reading `latest` off it.
+  for (const recent of byPond.values()) {
+    for (const list of Object.values(recent)) list?.sort((a, b) => b.recordedAt.getTime() - a.recordedAt.getTime());
   }
   return byPond;
+}
+
+function latestOf(recent: PondRecent) {
+  const latest: Record<string, LatestReading> = {};
+  for (const [parameter, list] of Object.entries(recent)) {
+    const newest = list?.[0];
+    if (newest) latest[parameter] = { value: newest.value, recordedAt: newest.recordedAt };
+  }
+  return latest;
+}
+
+// The tile color must wait for the same hold the alerts use, so a turbidity spike shorter than the hold leaves the
+// pond green exactly as it leaves no alert open. It is decided here, by the same heldSeveritiesFor, so the frontend
+// never knows the hold count or the band. In `heldSeverity`, null = in range, or out of range but not yet held; keys
+// are exactly the parameters present in `latest`.
+function heldSeverityOf(pondType: string | null | undefined, recent: PondRecent) {
+  const held: Record<string, AlertSeverity | null> = {};
+  for (const [parameter, severity] of Object.entries(heldSeveritiesFor(pondType, recent))) {
+    held[parameter] = severity ?? null;
+  }
+  return held;
 }
 
 // The pond payloads select the unit's raw sensorStatus column alongside its summary so the board can show why a
@@ -57,7 +87,7 @@ const pondDeviceSelect = { ...deviceSummarySelect, sensorStatus: true } satisfie
 
 type PondWithDevice = Prisma.PondGetPayload<{ include: { device: { select: typeof pondDeviceSelect } } }>;
 
-function toPondPayload(pond: PondWithDevice, latest: Record<string, LatestReading>) {
+function toPondPayload(pond: PondWithDevice, recent: PondRecent) {
   const { device, ...rest } = pond;
   let summary: Omit<NonNullable<PondWithDevice["device"]>, "sensorStatus"> | null = null;
   let sensorStatus: Record<string, string> = {};
@@ -68,7 +98,14 @@ function toPondPayload(pond: PondWithDevice, latest: Record<string, LatestReadin
   }
   // `thresholds` rides alongside `latest` so the dashboard colors a reading by the same numbers that raise
   // its alerts, instead of keeping a second hand-synced copy of them in the frontend.
-  return { ...rest, device: summary, latest, thresholds: thresholdsFor(pond.pondType), sensorStatus };
+  return {
+    ...rest,
+    device: summary,
+    latest: latestOf(recent),
+    thresholds: thresholdsFor(pond.pondType),
+    heldSeverity: heldSeverityOf(pond.pondType, recent),
+    sensorStatus,
+  };
 }
 
 pondsRouter.get("/", async (_req, res) => {
@@ -76,8 +113,8 @@ pondsRouter.get("/", async (_req, res) => {
     orderBy: { name: "asc" },
     include: { device: { select: pondDeviceSelect } },
   });
-  const latest = await latestReadingsByPond(ponds.map((pond) => pond.id));
-  res.json({ ponds: ponds.map((pond) => toPondPayload(pond, latest.get(pond.id) ?? {})) });
+  const recent = await recentReadingsByPond(ponds.map((pond) => pond.id));
+  res.json({ ponds: ponds.map((pond) => toPondPayload(pond, recent.get(pond.id) ?? {})) });
 });
 
 pondsRouter.get("/:id", validate(pondIdParams, "params"), async (req, res) => {
@@ -91,8 +128,8 @@ pondsRouter.get("/:id", validate(pondIdParams, "params"), async (req, res) => {
     return res.status(404).json({ error: "pond not found" });
   }
 
-  const latest = await latestReadingsByPond([id]);
-  res.json({ pond: toPondPayload(pond, latest.get(id) ?? {}) });
+  const recent = await recentReadingsByPond([id]);
+  res.json({ pond: toPondPayload(pond, recent.get(id) ?? {}) });
 });
 
 // Newest-first, keyset-paginated log of raw readings (what the pond detail page's history table shows).
