@@ -11,11 +11,14 @@ export const authRouter = Router();
 // Supabase's error text and full user object never reach the client. The text varies with the cause (and with
 // Supabase versions), which helps an attacker tell accounts and failure modes apart; the user object carries
 // identities, metadata and timestamps the frontend never reads. The real error is logged server-side instead
-// (message only — never a token or password). Upstream trouble (no status, 429 = Supabase's own rate limit on our
-// project, or 5xx) is a 502 so the user sees "unavailable" rather than "wrong password"; every other failure is a
-// plain 401, which is still a 4xx so loginRateLimit keeps counting it as a failed attempt.
+// (message only — never a token or password). Upstream trouble is a 502 so the user sees "unavailable" rather than
+// "wrong password": no status or status 0 (supabase-js reports a network-level fetch failure, e.g. the laptop's
+// hotspot can't reach Supabase, as AuthRetryableFetchError with status 0), 429 = Supabase's own rate limit on our
+// project, or 5xx. Status 0 used to fall through to 401, which is why the 2026-10-02 demo showed "incorrect email or
+// password" on one hotspot. Every other failure is a plain 401, which is still a 4xx so loginRateLimit keeps counting
+// it as a failed attempt.
 function isUpstreamFailure(status: number | undefined) {
-  return status === undefined || status === 429 || status >= 500;
+  return !status || status === 429 || status >= 500;
 }
 
 function sessionBody(session: { access_token: string; refresh_token: string; expires_at?: number }) {
