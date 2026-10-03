@@ -61,9 +61,10 @@ const SHARED: Record<ParameterId, Threshold> = {
   //   alert (ALRT-03); a low band above 0 would open an episode that could never resolve, as salinity once did.
   // - BFAR's ~0.5 m Secchi transparency guidance is a separate reference for pond managers, not a conversion
   //   source: no NTU number here comes from Secchi depth.
-  // - Sensor caveat: NTU is a vendor-curve estimate (no reference turbidimeter yet). The clean-water noise floor was
-  //   checked against 25 NTU on the bench (.planning/phases/03-turbidity-sensor-read-bench-characterization/
-  //   03-BENCH-RECORD.md) and on the unit (TURBIDITY_TEST_RESULTS.md §5e/§5f).
+  // - Sensor caveat: NTU is a vendor-curve estimate (no reference turbidimeter yet). The clean-water noise floor is
+  //   recorded on the bench (.planning/phases/03-turbidity-sensor-read-bench-characterization/03-BENCH-RECORD.md:
+  //   that rig could not resolve 25 NTU in clear water) and on the unit (TURBIDITY_TEST_RESULTS.md §5e: 85 clean
+  //   readings, none above 25 NTU, firmware 0.6.1); the 30-minute dashboard soak is §5f.
   turbidity: { safeMin: 0, safeMax: 25, criticalMin: 0, criticalMax: TURBIDITY_CRITICAL_MAX_NTU, criticalPending: true },
 };
 
