@@ -422,12 +422,13 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
     order.
   - Each evaluation runs in a transaction holding `pg_advisory_xact_lock(hashtext('alert:<pond>:<parameter>'))`,
     because MQTT messages are handled concurrently and two must not both open an alert.
-  - **Hold rule (Phase 7 gap closure).** `ALERT_HOLD_READINGS` in `parameters.ts` (temperature 1, turbidity 4, about
+  - **Hold rule (Phase 7 gap closure).** `ALERT_HOLD_READINGS` in `parameters.ts` (temperature 1, turbidity 4, pH 4, about
     2 min at the 30 s report interval) is how many consecutive out-of-range readings it takes to open or worsen an
     episode; `ALERT_HOLD_MAX_GAP_MS` (90 s) between two neighbouring readings breaks the run. The window's severity
-    is the least severe of the run (C, C, C, W is WARNING). The hold delays opening/worsening only: recovery stays
-    `ALERT_RECOVERY_MS`, and an unheld out-of-range reading inside an open episode just restarts the recovery clock
-    and notifies nobody. The pure rule is `heldSeverityFor` / `heldSeveritiesFor` in `alertRules.ts`; the shell's
+    is the least severe of the run (C, C, C, W is WARNING). Recovery stays `ALERT_RECOVERY_MS`, and since Phase 9
+    (ALRT-05) the hold also applies to recovery-breaking readings: an unheld out-of-range reading inside an open
+    episode is an `"unheld"` step that writes only `lastValue`/`lastRecordedAt`, keeps `nominalSince` and notifies
+    nobody; only a held run restarts the recovery clock. Temperature (hold 1) can never be unheld, so it is unchanged. The pure rule is `heldSeverityFor` / `heldSeveritiesFor` in `alertRules.ts`; the shell's
     extra lookback (`tx.reading.findMany`, `take` = hold) runs only for parameters with hold > 1, so temperature
     issues no extra query. The turbidity shell traces in `alerts.test.ts` / `ingest.test.ts` changed on purpose in
     07-06 (they gained `tx.reading.findMany`); temperature traces are untouched.
