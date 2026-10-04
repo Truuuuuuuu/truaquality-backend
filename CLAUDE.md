@@ -214,8 +214,11 @@ resolution of `tsc`/`tsx`/`ts-node`:
 - `npm run generate:signing-vectors` (`scripts/generate-signing-vectors.ts`) is **dev only**: regenerates
   `src/lib/__fixtures__/signing-vectors.v1.json` from the real `signMessage`. The firmware mirrors these
   vectors byte-for-byte (`firmware/scripts/sync-golden-vectors.mjs`), so changing them means updating the firmware
-  copy too. There are 8 vectors, all at `firmwareVersion` 0.6.0 (the version is inside the signed body, so bumping it
-  changes every signature); the last, `diagnostics-and-sensor-status`, pins the full 0.6.0 key order. The script
+  copy too. The file is **append-only**: there are 11 vectors — the original 8 at `firmwareVersion` 0.6.0 (the version
+  is inside the signed body, so bumping it changes every signature), their signatures pinned by name in
+  `deviceMessages.test.ts`, with `diagnostics-and-sensor-status` pinning the full 0.6.0 key order; then 3 pH vectors
+  at 0.7.0 (`ph` last in values and sensors), the last, `diagnostics-and-sensor-status-with-ph`, pinning the 0.7.0
+  key order. The script
   refuses (exit 1, nothing written) a sample value the firmware can't reproduce or a non-int32 `diag` number.
 - `npm run seed:admin` (`scripts/seed-admin.ts`) bootstraps the first admin the same way. It is
   idempotent: an existing profile just gets promoted.
