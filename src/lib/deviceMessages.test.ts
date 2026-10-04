@@ -34,10 +34,11 @@ function flipHexDigit(hex: string, index: number) {
 
 // The count and the pinned signature move together with the fixture, and only ever by regenerating it:
 // vectors 3-5 carry turbidity, vector 6 carries an awkward wifiSsid, vector 7 carries diag + sensors, and every
-// signature changed when firmwareVersion went to 0.6.0 (the version string is inside the signed body). The pinned
+// signature changed when firmwareVersion went to 0.6.0 (the version string is inside the signed body). Vectors 8-10
+// (firmwareVersion 0.7.0) were appended for pH, with ph last in values and sensors. The pinned
 // literal is what stops a half-written fixture from letting every case below pass vacuously.
-test("fixture holds the eight golden vectors", () => {
-  assert.equal(vectors.length, 8);
+test("fixture holds the eleven golden vectors", () => {
+  assert.equal(vectors.length, 11);
   assert.equal(v0.signature, "b537560d7b8e2fd2f7ff0f52b9b86ce9ee0f413f9db798ade49d7fedd395b491");
   for (const v of vectors) assert.match(v.secret, /not-real/);
 });

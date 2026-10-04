@@ -8,8 +8,10 @@
 //   printf '%s\n%s' "$topic" "$body" | openssl dgst -sha256 -hmac "$secret"
 //
 // The firmware mirrors these vectors byte-for-byte (firmware/scripts/sync-golden-vectors.mjs) to prove it signs
-// identically. Changing a vector (or the wire format, or the firmwareVersion inside every body — now 0.6.0) means
-// re-syncing the firmware copy too.
+// identically. Changing a vector (or the wire format, or the firmwareVersion inside a body — 0.6.0 for the original
+// eight, 0.7.0 for the pH vectors appended after them) means re-syncing the firmware copy too. The file is
+// append-only: new vectors go at the end, so every existing signature (pinned by name in deviceMessages.test.ts)
+// stays byte-identical.
 import { writeFileSync } from "node:fs";
 import { readingsTopic, signMessage } from "../src/lib/deviceMessages.ts";
 
@@ -24,7 +26,7 @@ const OPENSSL_CHECK = `printf '%s\\n%s' "$topic" "$body" | openssl dgst -sha256 
 // the shortest decimal that round-trips the double. A value outside the intersection makes the native firmware
 // suite fail on a one-digit difference deep inside a 200-character body — which reads like a signing bug and is
 // not one. assertFirmwareRepresentable() below enforces the rule so it can't be forgotten; realistic
-// temperature and turbidity readings at 1-2 decimal places comply comfortably. Every `diag` number must be a
+// temperature, turbidity and pH readings at 1-2 decimal places comply comfortably. Every `diag` number must be a
 // plain int32 integer, which both serializers print identically.
 type VectorInput = {
   name: string;
@@ -138,6 +140,48 @@ const inputs: VectorInput[] = [
       diag: { rssi: -67, uptimeS: 86400, resetReason: "power_on", freeHeap: 201344, queued: 3 },
       sensors: { temperature: "ok", turbidity: "no_signal" },
       samples: [{ recordedAt: "2023-11-14T22:13:20Z", values: { temperature: 27.5 } }],
+    },
+  },
+  // The pH vectors (Phase 9) are appended after every 0.6.0 vector so none of the originals moves or changes. They
+  // carry firmwareVersion 0.7.0, the first firmware that emits pH, and pH is always the last key (temperature,
+  // turbidity, ph) in both values and sensors (D-18) — the order wire::buildBody adds them in.
+  {
+    // Vector 3's shape plus pH. 7.1 is not exact in float32, but ArduinoJson and JSON.stringify both print "7.1".
+    name: "temperature-turbidity-and-ph",
+    secret: "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
+    deviceId: "00000000-0000-4000-8000-000000000001",
+    body: {
+      firmwareVersion: "0.7.0",
+      samples: [{ recordedAt: "2023-11-14T22:13:20Z", values: { temperature: 27.5, turbidity: 12.3, ph: 7.1 } }],
+    },
+  },
+  {
+    // A backlog batch where sensors drop out one at a time: values just under and over the BFAR 6.5-9.5 band, then
+    // turbidity omitted, then pH omitted. Omission (never null) is how a faulted sensor looks on the wire.
+    name: "ph-batch-with-omissions",
+    secret: "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
+    deviceId: "00000000-0000-4000-8000-000000000001",
+    body: {
+      firmwareVersion: "0.7.0",
+      samples: [
+        { recordedAt: "2023-11-14T22:13:20Z", values: { temperature: 27.5, turbidity: 12.3, ph: 6.49 } },
+        { recordedAt: "2023-11-14T22:14:20Z", values: { temperature: 27.4, ph: 9.51 } },
+        { recordedAt: "2023-11-14T22:15:20Z", values: { temperature: 27.3 } },
+      ],
+    },
+  },
+  {
+    // Pins the full 0.7.0 key order, the successor of "diagnostics-and-sensor-status": same diag, sensors with pH
+    // last (D-18). pH's status is not "ok", so its value is omitted from the sample exactly as the unit does.
+    name: "diagnostics-and-sensor-status-with-ph",
+    secret: "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
+    deviceId: "00000000-0000-4000-8000-000000000001",
+    body: {
+      firmwareVersion: "0.7.0",
+      wifiSsid: "BFAR-Pond-1",
+      diag: { rssi: -67, uptimeS: 86400, resetReason: "power_on", freeHeap: 201344, queued: 3 },
+      sensors: { temperature: "ok", turbidity: "ok", ph: "no_signal" },
+      samples: [{ recordedAt: "2023-11-14T22:13:20Z", values: { temperature: 27.5, turbidity: 12.3 } }],
     },
   },
 ];
