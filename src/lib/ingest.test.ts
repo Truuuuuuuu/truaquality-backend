@@ -241,7 +241,7 @@ test("mixed-rejection batch: reasons pinned in sample order, only accepted rows 
       firmwareVersion: "simulator",
       samples: [
         { recordedAt: minute(-1), values: { temperature: 60.01 } },
-        { recordedAt: minute(-2), values: { ph: 7 } },
+        { recordedAt: minute(-2), values: { orp: 7 } },
         { recordedAt: preAssignment, values: { temperature: 28 } },
         { recordedAt: tooOld, values: { temperature: 28 } },
         { recordedAt: future, values: { temperature: 28 } },
@@ -258,7 +258,7 @@ test("mixed-rejection batch: reasons pinned in sample order, only accepted rows 
     duplicates: 0,
     rejected: [
       { recordedAt: minute(-1), parameter: "temperature", value: 60.01, reason: "outside -5..60" },
-      { recordedAt: minute(-2), parameter: "ph", value: 7, reason: "unknown parameter" },
+      { recordedAt: minute(-2), parameter: "orp", value: 7, reason: "unknown parameter" },
       {
         recordedAt: preAssignment,
         parameter: "temperature",
