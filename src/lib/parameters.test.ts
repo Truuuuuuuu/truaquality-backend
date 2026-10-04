@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
+import { excelNumberFormat } from "./exportSummary.ts";
 import {
   ALERT_HOLD_MAX_GAP_MS,
   ALERT_HOLD_READINGS,
@@ -197,14 +198,14 @@ describe("turbidity (NTU) — BFAR safeMax 25, criticalMax PENDING BFAR", () => 
     assert.equal(PARAMETER_DISPLAY.turbidity.label, "Turbidity");
   });
 
-  test("export-format guard: every precision >= 1, turbidity format is 0.0\" NTU\"", () => {
-    // readingsExport.numFmtFor builds `0.` + precision zeros; precision 0 would leave a stray decimal point.
+  test("export-format guard: every precision >= 1, turbidity format is 0.0\" NTU\", pH is a bare 0.00", () => {
+    // excelNumberFormat builds `0.` + precision zeros; precision 0 would leave a stray decimal point.
     for (const id of PARAMETER_IDS) {
       const precision = PARAMETER_DISPLAY[id].precision;
       assert.ok(Number.isInteger(precision) && precision >= 1, `${id}: precision ${precision} < 1`);
     }
-    const d = PARAMETER_DISPLAY.turbidity;
-    assert.equal(`0.${"0".repeat(d.precision)}" ${d.unit}"`, '0.0" NTU"');
+    assert.equal(excelNumberFormat("turbidity"), '0.0" NTU"');
+    assert.equal(excelNumberFormat("ph"), "0.00");
   });
 });
 

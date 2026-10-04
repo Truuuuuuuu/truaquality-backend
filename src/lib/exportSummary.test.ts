@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { SUMMARY_HEADERS, summaryRows } from "./exportSummary.ts";
+import { excelNumberFormat, SUMMARY_HEADERS, summaryRows } from "./exportSummary.ts";
 import type { PondParameterAnalysis } from "./pondAnalysis.ts";
 
 const temperature: PondParameterAnalysis = {
@@ -72,5 +72,48 @@ describe("summaryRows", () => {
     });
     assert.deepEqual(row?.[5], { value: "Critical" });
     assert.deepEqual(row?.[6], { value: "Steady" });
+  });
+});
+
+describe("excelNumberFormat", () => {
+  test("temperature and turbidity keep their quoted unit suffix", () => {
+    assert.equal(excelNumberFormat("temperature"), '0.0" °C"');
+    assert.equal(excelNumberFormat("temperature", "/hour"), '0.0" °C/hour"');
+    assert.equal(excelNumberFormat("turbidity"), '0.0" NTU"');
+  });
+
+  test("a unitless parameter gets a bare number format, and its rate is worded with the label", () => {
+    assert.equal(excelNumberFormat("ph"), "0.00");
+    assert.equal(excelNumberFormat("ph", "/hour"), '0.00" pH/hour"');
+    assert.equal(excelNumberFormat("ph", "/day"), '0.00" pH/day"');
+  });
+});
+
+describe("summaryRows — pH (unitless)", () => {
+  const ph: PondParameterAnalysis = {
+    min: 6.2,
+    max: 9.8,
+    avg: 7.84,
+    outOfRangeShare: 0.1,
+    worst: "warning",
+    trend: { direction: "rising", rate: 0.12, rateUnit: "hr" },
+    previousAvg: 7.5,
+    summary: "In the last 24 hours, pH averaged 7.84…",
+  };
+
+  test("value cells have no unit suffix, rate reads pH/hour, change is a bare signed number", () => {
+    const [row] = summaryRows(["ph"], { ph });
+    assert.deepEqual(row, [
+      { value: "pH" },
+      { value: 6.2, numFmt: "0.00" },
+      { value: 9.8, numFmt: "0.00" },
+      { value: 7.84, numFmt: "0.00" },
+      { value: 0.1, numFmt: "0%" },
+      { value: "Warning" },
+      { value: "Rising" },
+      { value: 0.12, numFmt: '+0.00" pH/hour";-0.00" pH/hour";0.00" pH/hour"' },
+      { value: 7.84 - 7.5, numFmt: "+0.00;-0.00;0.00" },
+      { value: "In the last 24 hours, pH averaged 7.84…" },
+    ]);
   });
 });

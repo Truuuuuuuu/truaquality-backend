@@ -80,6 +80,31 @@ describe("describeAnalysis", () => {
     );
   });
 
+  test("pH is unitless: no stray spaces, label keeps its casing, rate is worded in pH", () => {
+    const text = describeAnalysis(
+      "ph",
+      analysis({
+        min: 6.2,
+        max: 9.8,
+        avg: 7.84,
+        outOfRangeShare: 0.1,
+        worst: "warning",
+        trend: { direction: "rising", rate: 0.12, rateUnit: "hr" },
+        previousAvg: 7.5,
+      }),
+      thresholds.ph,
+      rolling(24 * HOUR),
+    );
+    assert.equal(
+      text,
+      "In the last 24 hours, pH averaged 7.84 and ranged from 6.20 to 9.80. " +
+        "It was outside the safe range (6.50–9.50) for about 10% of readings, reaching warning level at worst. " +
+        "Overall it was rising by about 0.12 pH per hour. " +
+        "Its average was 0.34 higher than in the 24 hours before.",
+    );
+    assert.doesNotMatch(text, /  | \./);
+  });
+
   test("a constant value over 7 days reads as held at, steady", () => {
     const text = describeAnalysis(
       "temperature",
