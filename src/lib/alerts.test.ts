@@ -2,9 +2,10 @@ import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import type { Device } from "../generated/prisma/client.ts";
 import { createPrismaFake, type FakeAlert, type PrismaFakeOptions } from "../testing/prismaFake.ts";
+import { ALERT_RECOVERY_MS } from "./alertRules.ts";
 import { evaluatePondAlerts } from "./alerts.ts";
 import { ingestSamples } from "./ingest.ts";
-import { thresholdsFor, type ParameterId } from "./parameters.ts";
+import { ALERT_HOLD_READINGS, thresholdsFor, type ParameterId } from "./parameters.ts";
 
 // Shell-trace characterization of evaluatePondAlerts (and, in Part B, the full ingest -> alerts -> notify
 // path) against the in-memory Prisma fake (TEST-01). Written against the UNMODIFIED alerts.ts before the pure
@@ -624,4 +625,82 @@ test("S-H4: a temperature evaluation never looks back (hold 1, no tx.reading.fin
   assert.deepEqual(fake.ops(), [...PREFIX, "tx.alert.create", "tx.profile.findMany", "tx.notification.createMany"]);
   assert.equal(fake.alerts[0].severity, "WARNING");
   assert.deepEqual(fake.alerts[0].openedAt, minute(3));
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// pH (Phase 9) — two-sided, held (ALERT_HOLD_READINGS.ph), critical lines PENDING BFAR (equal to the bounds)
+// ---------------------------------------------------------------------------------------------------------
+
+const PH = thresholdsFor(null).ph;
+const PH_HOLD = ALERT_HOLD_READINGS.ph;
+const PH_ACID = PH.safeMin - 0.5;
+const PH_ALKALI = PH.safeMax + 0.3;
+const PH_NEUTRAL = PH.safeMin + 0.5;
+const RECOVERY_MIN = ALERT_RECOVERY_MS / MIN;
+
+// Ingests one pH sample per entry, `stepMs` apart from T0, asserting each is stored.
+async function ingestPh(values: number[], stepMs: number, device = turbidityDevice()) {
+  for (const [n, value] of values.entries()) {
+    const recordedAt = at(n * stepMs);
+    const result = await ingestSamples(
+      device,
+      { firmwareVersion: "0.7.0", samples: [{ recordedAt, values: { ph: value } }] },
+      recordedAt,
+    );
+    assert.deepEqual(result, { status: "stored", accepted: 1, duplicates: 0, rejected: [] });
+  }
+}
+
+for (const [side, value] of [
+  ["acidic", PH_ACID],
+  ["alkaline", PH_ALKALI],
+] as const) {
+  test(`ALRT-04 end-to-end pH ${side}: a held run opens WARNING, in-range readings resolve after ALERT_RECOVERY_MS`, async (t) => {
+    const fake = setup(t);
+
+    await ingestPh(
+      [...Array.from({ length: PH_HOLD }, () => value), ...Array.from({ length: RECOVERY_MIN + 1 }, () => PH_NEUTRAL)],
+      MIN,
+    );
+
+    assert.equal(fake.alerts.length, 1);
+    const [episode] = fake.alerts;
+    assert.equal(episode.parameter, "ph");
+    assert.equal(episode.severity, "WARNING");
+    assert.deepEqual(episode.openedAt, minute(PH_HOLD - 1));
+    assert.deepEqual(episode.nominalSince, minute(PH_HOLD));
+    assert.deepEqual(episode.resolvedAt, minute(PH_HOLD + RECOVERY_MIN));
+    assert.deepEqual(
+      fake.notifications.map((n) => [n.kind, n.severity, n.value, n.recordedAt]),
+      [
+        ["ALERT_OPENED", "WARNING", value, minute(PH_HOLD - 1)],
+        ["ALERT_RESOLVED", "WARNING", PH_NEUTRAL, minute(PH_HOLD + RECOVERY_MIN)],
+      ],
+    );
+  });
+}
+
+test("C-PH2 (pre-fix characterization): an open pH episode in recovery, one unheld acidic reading resets nominalSince and notifies nobody", async (t) => {
+  const fake = setup(t);
+  seedAlert(fake, {
+    parameter: "ph",
+    severity: "WARNING",
+    lastValue: PH_NEUTRAL,
+    lastRecordedAt: minute(0),
+    nominalSince: minute(-3),
+  });
+  for (let i = 6; i >= 0; i--) seedReading(fake, PH_NEUTRAL, at(-i * 30_000), "ph");
+  seedReading(fake, PH_ACID, at(30_000), "ph");
+
+  await evaluate(["ph"]);
+
+  assert.deepEqual(fake.ops(), [...PREFIX.slice(0, 4), "tx.reading.findMany", ...PREFIX.slice(4), "tx.alert.update"]);
+  assert.deepEqual(argsOf(fake, "tx.alert.update")[0].data, {
+    lastValue: PH_ACID,
+    lastRecordedAt: at(30_000),
+    nominalSince: null,
+  });
+  assert.equal(fake.alerts[0].severity, "WARNING");
+  assert.equal(fake.alerts[0].resolvedAt, null);
+  assert.equal(fake.notifications.length, 0);
 });

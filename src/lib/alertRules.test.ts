@@ -469,3 +469,50 @@ describe("hold rule (Phase 7 gap closure)", () => {
     assert.equal(HOLD, 4);
   });
 });
+
+describe("pH — two-sided alerts (Phase 9)", () => {
+  // pH is held like turbidity (ALERT_HOLD_READINGS.ph, PROVISIONAL) but two-sided: below safeMin is acidic, above
+  // safeMax alkaline. Its critical lines are PENDING BFAR and equal the 0..14 bounds, so no stored reading is
+  // CRITICAL. Run lengths come from ALERT_HOLD_READINGS.ph and values from thresholdsFor(null).ph (D-13).
+  const PH = thresholdsFor(null).ph;
+  const HOLD = ALERT_HOLD_READINGS.ph;
+  const ACID = PH.safeMin - 0.01;
+  const ALKALI = PH.safeMax + 0.01;
+  const NEUTRAL = (PH.safeMin + PH.safeMax) / 2;
+  const STEP = 60_000;
+
+  // newest first: values[0] is the latest reading at `end`, each next one STEP earlier.
+  const series = (values: number[], end: Date = at(10 * MIN_MS)): HeldReading[] =>
+    values.map((value, i) => ({ value, recordedAt: new Date(end.getTime() - i * STEP) }));
+  const decide = (open: OpenEpisode | null, recent: HeldReading[], parameter: "ph" | "turbidity" | "temperature" = "ph") =>
+    decideAlertStep(parameter, null, open, recent[0], recent.slice(1));
+  const run = (value: number, length: number) => Array.from({ length }, () => value);
+
+  for (const [side, value] of [
+    ["acidic", ACID],
+    ["alkaline", ALKALI],
+  ] as const) {
+    test(`ALRT-04 ${side}: HOLD-1 out-of-range readings open nothing, HOLD open WARNING`, () => {
+      assert.deepEqual(decide(null, series(run(value, HOLD - 1))), { kind: "none" });
+      assert.deepEqual(decide(null, series([...run(value, HOLD - 1), NEUTRAL])), { kind: "none" });
+      assert.deepEqual(decide(null, series(run(value, HOLD))), { kind: "open", severity: "WARNING" });
+    });
+  }
+
+  test("ALRT-04: the BFAR boundary values 6.5 and 9.5 are in range; nothing in 0..14 is CRITICAL", () => {
+    assert.deepEqual(decide(null, series(run(6.5, HOLD))), { kind: "none" });
+    assert.deepEqual(decide(null, series(run(9.5, HOLD))), { kind: "none" });
+    assert.deepEqual(decide(null, series(run(PARAMETER_BOUNDS.ph.min, HOLD))), { kind: "open", severity: "WARNING" });
+    assert.deepEqual(decide(null, series(run(PARAMETER_BOUNDS.ph.max, HOLD))), { kind: "open", severity: "WARNING" });
+  });
+
+  test("C-PH1 (pre-fix characterization): open pH episode in recovery, one unheld acidic reading is abnormal at the episode's severity", () => {
+    const open = episode({ severity: "WARNING", lastValue: NEUTRAL, lastRecordedAt: at(0), nominalSince: at(-5 * MIN_MS) });
+    assert.deepEqual(decide(open, series([ACID, ...run(NEUTRAL, HOLD)])), {
+      kind: "abnormal",
+      severity: "WARNING",
+      escalated: false,
+      worsened: false,
+    });
+  });
+});
