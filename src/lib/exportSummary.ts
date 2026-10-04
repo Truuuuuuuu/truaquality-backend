@@ -20,11 +20,19 @@ export const SUMMARY_HEADERS = [
   "Interpretation",
 ] as const;
 
-// Same "value unit" format as the Readings sheet, so numbers stay real (sortable, chartable) and show their unit.
-function valueFormat(parameter: ParameterId, suffix = "") {
-  const { precision, unit } = PARAMETER_DISPLAY[parameter];
+// The Excel number format for a parameter's cells, shared with the Readings sheet (readingsExport.numFmtFor), so
+// numbers stay real (sortable, chartable) and show their unit as a quoted literal. A unitless parameter (pH) gets
+// the bare number format: an empty quoted suffix used to leave a trailing space after every value. A rate still
+// needs a word, so a unitless rate falls back to the label ("pH/hour").
+export function excelNumberFormat(parameter: ParameterId, suffix = "") {
+  const { precision, unit, label } = PARAMETER_DISPLAY[parameter];
   const number = `0.${"0".repeat(precision)}`;
-  return `${number}" ${unit}${suffix}"`;
+  const text = unit ? unit + suffix : suffix ? label + suffix : "";
+  return text ? `${number}" ${text}"` : number;
+}
+
+function valueFormat(parameter: ParameterId, suffix = "") {
+  return excelNumberFormat(parameter, suffix);
 }
 
 // Signed: "+0.6 °C" / "-0.6 °C" / "0.0 °C", so a change reads as a change.

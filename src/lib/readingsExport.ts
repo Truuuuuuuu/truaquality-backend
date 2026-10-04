@@ -1,8 +1,8 @@
 import ExcelJS from "exceljs";
 import type { Response } from "express";
 import type { ReadingHourly } from "../generated/prisma/client.ts";
-import { SUMMARY_HEADERS, summaryRows } from "./exportSummary.ts";
-import { PARAMETER_DISPLAY, PARAMETER_IDS, type ParameterId } from "./parameters.ts";
+import { excelNumberFormat, SUMMARY_HEADERS, summaryRows } from "./exportSummary.ts";
+import { isParameterId, PARAMETER_DISPLAY, PARAMETER_IDS, type ParameterId } from "./parameters.ts";
 import type { PondAnalysis } from "./pondAnalysis.ts";
 import { prisma } from "./prisma.ts";
 import { rawRetentionDays } from "./readingRollup.ts";
@@ -47,11 +47,10 @@ function formatManilaTimestamp(date: Date) {
 // as a literal suffix (e.g. "27.6 °C") — the cell stays a real number (sortable, chartable), the unit is
 // purely display. Only reachable through a real .xlsx cell format, not plain text: the non-ASCII "°" is
 // safe here because XLSX stores it in proper OOXML/UTF-8, not bytes Excel might misguess the encoding of
-// (the earlier, now-abandoned CSV export had to avoid it for exactly that reason).
+// (the earlier, now-abandoned CSV export had to avoid it for exactly that reason). Built by excelNumberFormat so
+// the Readings and Summary sheets format a parameter identically, including a unitless one.
 function numFmtFor(parameterId: string) {
-  const display = PARAMETER_DISPLAY[parameterId as ParameterId];
-  if (!display) return undefined;
-  return `0.${"0".repeat(display.precision)}" ${display.unit}"`;
+  return isParameterId(parameterId) ? excelNumberFormat(parameterId) : undefined;
 }
 
 const THIN_BORDER: Partial<ExcelJS.Borders> = {

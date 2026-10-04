@@ -56,13 +56,16 @@ export function describeAnalysis(
   threshold: Threshold,
   range: SummaryRange,
 ): string {
-  const { label, unit, precision, approximate, sensorCeiling } = PARAMETER_DISPLAY[parameter];
+  const { label, unit, precision, approximate, sensorCeiling, sentenceLabel } = PARAMETER_DISPLAY[parameter];
   const atCeiling = (v: number) => sensorCeiling !== undefined && v >= sensorCeiling;
   const number = (v: number) => (atCeiling(v) ? `≥ ${sensorCeiling}` : v.toFixed(precision));
   // "≥ 3000" already says the value is a bound, so it drops the "≈".
-  const value = (v: number) => `${approximate && !atCeiling(v) ? "≈ " : ""}${number(v)} ${unit}`;
-  const amount = (v: number) => `${Math.abs(v).toFixed(precision)} ${unit}`;
-  const name = label.toLowerCase();
+  // A unitless parameter (pH) appends nothing, so its sentences have no stray space before the punctuation.
+  const unitSuffix = unit ? ` ${unit}` : "";
+  const value = (v: number) => `${approximate && !atCeiling(v) ? "≈ " : ""}${number(v)}${unitSuffix}`;
+  const amount = (v: number) => `${Math.abs(v).toFixed(precision)}${unitSuffix}`;
+  // sentenceLabel keeps an acronym's casing mid-sentence ("pH averaged ...").
+  const name = sentenceLabel ?? label.toLowerCase();
   const sentences: string[] = [];
 
   sentences.push(
@@ -98,7 +101,7 @@ export function describeAnalysis(
     sentences.push(
       Number(rate) === 0
         ? `Overall it was ${trend.direction} slowly.`
-        : `Overall it was ${trend.direction} by about ${rate} ${unit} per ${per}.`,
+        : `Overall it was ${trend.direction} by about ${rate} ${unit || label} per ${per}.`,
     );
   }
 
