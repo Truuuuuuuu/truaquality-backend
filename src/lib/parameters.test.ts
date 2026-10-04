@@ -7,6 +7,8 @@ import {
   PARAMETER_DISPLAY,
   PARAMETER_IDS,
   PARAMETER_THRESHOLDS,
+  PH_CRITICAL_MAX,
+  PH_CRITICAL_MIN,
   severityFor,
   TURBIDITY_CRITICAL_MAX_NTU,
   thresholdProfileFor,
@@ -103,8 +105,8 @@ describe("turbidity (NTU) — BFAR safeMax 25, criticalMax PENDING BFAR", () => 
   const TB = thresholdsFor(null).turbidity;
   const POND_TYPES = [null, "FRESHWATER", "BRACKISH", "SALTWATER", "LAKE"];
 
-  test("PARAMETER_IDS is temperature then turbidity (export column order)", () => {
-    assert.deepEqual(PARAMETER_IDS, ["temperature", "turbidity"]);
+  test("PARAMETER_IDS is temperature, turbidity, then ph (export column order)", () => {
+    assert.deepEqual(PARAMETER_IDS, ["temperature", "turbidity", "ph"]);
   });
 
   test("bounds accept every firmware value 0..3000 NTU with refit headroom", () => {
@@ -206,6 +208,65 @@ describe("turbidity (NTU) — BFAR safeMax 25, criticalMax PENDING BFAR", () => 
   });
 });
 
+describe("pH — BFAR 6.5–9.5, critical PENDING BFAR", () => {
+  const POND_TYPES = [null, ...PROFILES, "LAKE"];
+
+  test("bounds are the pH scale 0..14", () => {
+    assert.deepEqual(PARAMETER_BOUNDS.ph, { min: 0, max: 14 });
+  });
+
+  const edges: Array<[number, "WARNING" | null]> = [
+    [0, "WARNING"],
+    [6.49, "WARNING"],
+    [6.5, null],
+    [7.5, null],
+    [9.5, null],
+    [9.51, "WARNING"],
+    [14, "WARNING"],
+  ];
+  for (const [value, expected] of edges) {
+    test(`TEST-10: ${value} -> ${expected} for every pond type`, () => {
+      for (const pondType of POND_TYPES) {
+        assert.equal(severityFor("ph", value, pondType), expected, `pondType ${pondType}`);
+      }
+    });
+  }
+
+  // The critical lines are placeholders equal to the bounds, so with severityFor's strict comparison no reading that
+  // ingest can store is ever CRITICAL (T-09-02-02: no false critical alarms while BFAR's figures are pending).
+  test("D-01: no stored value 0..14 is ever CRITICAL in any profile", () => {
+    for (const pondType of POND_TYPES) {
+      for (let i = 0; i <= 1400; i++) {
+        const value = i / 100;
+        assert.notEqual(severityFor("ph", value, pondType), "CRITICAL", `${value} pondType ${pondType}`);
+      }
+    }
+  });
+
+  test("D-01: every profile has ph with pending critical placeholders at the bounds", () => {
+    assert.equal(PH_CRITICAL_MIN, PARAMETER_BOUNDS.ph.min);
+    assert.equal(PH_CRITICAL_MAX, PARAMETER_BOUNDS.ph.max);
+    for (const profile of PROFILES) {
+      const t = thresholdsFor(profile).ph;
+      assert.equal(t.safeMin, 6.5, `${profile}`);
+      assert.equal(t.safeMax, 9.5, `${profile}`);
+      assert.equal(t.criticalMin, PH_CRITICAL_MIN, `${profile}`);
+      assert.equal(t.criticalMax, PH_CRITICAL_MAX, `${profile}`);
+      assert.equal(t.criticalPending, true, `${profile}: not pending`);
+    }
+  });
+
+  test("display metadata is pH, unitless, precision 2, sentence label keeps its casing", () => {
+    assert.deepEqual(PARAMETER_DISPLAY.ph, {
+      label: "pH",
+      unit: "",
+      precision: 2,
+      exportHeader: "pH",
+      sentenceLabel: "pH",
+    });
+  });
+});
+
 describe("alert hold (Phase 7 gap closure)", () => {
   test("P-22: ALERT_HOLD_READINGS has an integer >= 1 per parameter (temperature 1, turbidity 4); gap 90 s", () => {
     for (const id of PARAMETER_IDS) {
@@ -215,6 +276,8 @@ describe("alert hold (Phase 7 gap closure)", () => {
     assert.deepEqual(Object.keys(ALERT_HOLD_READINGS).sort(), [...PARAMETER_IDS].sort());
     assert.equal(ALERT_HOLD_READINGS.temperature, 1);
     assert.equal(ALERT_HOLD_READINGS.turbidity, 4);
+    // ph's count is PROVISIONAL (set by the Phase 10 soak, D-13), so only its shape is pinned here.
+    assert.ok(Number.isInteger(ALERT_HOLD_READINGS.ph) && ALERT_HOLD_READINGS.ph >= 1, `ph: hold ${ALERT_HOLD_READINGS.ph}`);
     assert.equal(ALERT_HOLD_MAX_GAP_MS, 90_000);
   });
 });

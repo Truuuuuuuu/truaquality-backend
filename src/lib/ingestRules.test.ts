@@ -136,7 +136,7 @@ describe("classifySamples", () => {
   });
 
   test("unknown parameter ids are rejected while a valid temperature in the same sample is stored", () => {
-    const values = { ph: 7, Temperature: 27, toString: 1, temperature: 28 } as Record<string, number>;
+    const values = { orp: 7, Temperature: 27, toString: 1, temperature: 28 } as Record<string, number>;
     // "__proto__" as an own key, the way JSON.parse would produce it.
     Object.defineProperty(values, "__proto__", { value: 2, enumerable: true, configurable: true, writable: true });
     const { rows, rejected, storedParameters } = classifySamples(device, [{ recordedAt: R, values }], R);
@@ -151,7 +151,7 @@ describe("classifySamples", () => {
       [
         ["Temperature", "unknown parameter"],
         ["__proto__", "unknown parameter"],
-        ["ph", "unknown parameter"],
+        ["orp", "unknown parameter"],
         ["toString", "unknown parameter"],
       ],
     );
@@ -283,13 +283,82 @@ describe("classifySamples — turbidity (NTU)", () => {
   });
 
   test("an unknown parameter beside turbidity is rejected while turbidity is stored", () => {
-    const { rows, rejected, storedParameters } = classifySamples(device, [{ recordedAt: R, values: { ph: 7, turbidity: 12 } }], R);
+    const { rows, rejected, storedParameters } = classifySamples(device, [{ recordedAt: R, values: { orp: 7, turbidity: 12 } }], R);
     assert.deepEqual(
       rows.map((r) => [r.parameter, r.value]),
       [["turbidity", 12]],
     );
     assert.deepEqual([...storedParameters], ["turbidity"]);
-    assert.deepEqual(rejected, [{ recordedAt: R, parameter: "ph", value: 7, reason: "unknown parameter" }]);
+    assert.deepEqual(rejected, [{ recordedAt: R, parameter: "orp", value: 7, reason: "unknown parameter" }]);
+  });
+});
+
+describe("classifySamples — ph", () => {
+  const PH = PARAMETER_BOUNDS.ph;
+
+  for (const value of [PH.min, 6.5, 9.5, PH.max]) {
+    test(`pH ${value} is accepted`, () => {
+      const { rows, rejected } = classifySamples(device, [{ recordedAt: R, values: { ph: value } }], R);
+      assert.equal(rejected.length, 0);
+      assert.deepEqual(rows, [{ pondId: "p1", deviceId: "d1", parameter: "ph", value, recordedAt: R, receivedAt: R }]);
+    });
+  }
+
+  for (const value of [-0.01, 14.01]) {
+    test(`pH ${value} is rejected`, () => {
+      const { rows, rejected, storedParameters } = classifySamples(device, [{ recordedAt: R, values: { ph: value } }], R);
+      assert.equal(rows.length, 0);
+      assert.equal(storedParameters.size, 0);
+      assert.deepEqual(rejected, [{ recordedAt: R, parameter: "ph", value, reason: "outside 0..14" }]);
+    });
+  }
+
+  test("temperature + turbidity + ph in one sample store three rows in parameter order", () => {
+    const { rows, rejected, storedParameters } = classifySamples(
+      device,
+      [{ recordedAt: R, values: { temperature: 27, turbidity: 12, ph: 7.1 } }],
+      R,
+    );
+    assert.equal(rejected.length, 0);
+    assert.deepEqual(
+      rows.map((r) => [r.parameter, r.value]),
+      [
+        ["temperature", 27],
+        ["turbidity", 12],
+        ["ph", 7.1],
+      ],
+    );
+    assert.deepEqual([...storedParameters], ["temperature", "turbidity", "ph"]);
+  });
+
+  test("an out-of-bounds ph does not drop temperature or turbidity in the same sample", () => {
+    const { rows, rejected, storedParameters } = classifySamples(
+      device,
+      [{ recordedAt: R, values: { temperature: 27, turbidity: 12, ph: 14.01 } }],
+      R,
+    );
+    assert.deepEqual(
+      rows.map((r) => [r.parameter, r.value]),
+      [
+        ["temperature", 27],
+        ["turbidity", 12],
+      ],
+    );
+    assert.deepEqual([...storedParameters], ["temperature", "turbidity"]);
+    assert.deepEqual(rejected, [{ recordedAt: R, parameter: "ph", value: 14.01, reason: "outside 0..14" }]);
+  });
+
+  test("null ph beside temperature and turbidity is dropped silently (sensor fault)", () => {
+    const { rows, rejected } = classifySamples(
+      device,
+      [{ recordedAt: R, values: { temperature: 27, turbidity: 12, ph: null } }],
+      R,
+    );
+    assert.equal(rejected.length, 0);
+    assert.deepEqual(
+      rows.map((r) => r.parameter),
+      ["temperature", "turbidity"],
+    );
   });
 });
 
