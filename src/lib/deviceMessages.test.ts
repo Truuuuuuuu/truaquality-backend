@@ -42,6 +42,31 @@ test("fixture holds the eight golden vectors", () => {
   for (const v of vectors) assert.match(v.secret, /not-real/);
 });
 
+// The fixture is append-only: units already in the field sign these exact bytes, and the firmware suite mirrors
+// them. Pinning every original signature by name (not just v0's) means a regeneration that reorders, edits or
+// re-versions an old vector fails here instead of silently shifting the contract under the firmware.
+const ORIGINAL_SIGNATURES: Record<string, string> = {
+  "single-temperature-sample": "b537560d7b8e2fd2f7ff0f52b9b86ce9ee0f413f9db798ade49d7fedd395b491",
+  "multi-sample-batch": "0d938be9a29524b48e50807c0c21256049aeb3302e23108aa6c616ba86ce9c74",
+  "second-device": "5ed7c10a5da88e8028e408b8ce2740f18218b1cb31327740c7e7ad759076b7c2",
+  "temperature-and-turbidity": "b83c43c26ce27fbf241f99dc476aa64f0c5e9e5fd489a2231a90ec54bfb899e4",
+  "turbidity-only-sample": "b91e60947a6c12bfa0e12e469a9cdcdd15986bb16e1c31a4bf6778ed05190158",
+  "turbidity-nan-omitted-in-batch": "121ccae844014528b87a08f3dafed0ecd5a908a686c6dad86e8f848441fb3c63",
+  "wifi-ssid-awkward": "8b3f6a8336e8659e909fb66698ab1ff483f33c29e3d8633687b742742d5070ed",
+  "diagnostics-and-sensor-status": "7970b61b299fcf13afe3d807331773b64cb6065907f742d82554b6b312631e7c",
+};
+
+test("original 8 golden vectors are pinned byte-for-byte (append-only)", () => {
+  const expected = Object.entries(ORIGINAL_SIGNATURES);
+  assert.equal(expected.length, 8);
+  expected.forEach(([name, signature], i) => {
+    const v = vectors[i];
+    assert.ok(v, `vector ${i} (${name}) is missing`);
+    assert.equal(v.name, name, `vector ${i} name`);
+    assert.equal(v.signature, signature, `vector ${i} (${name}) signature`);
+  });
+});
+
 for (const v of vectors) {
   test(`valid golden vector "${v.name}" round-trips`, (t) => {
     assert.equal(signMessage(v.secret, v.topic, v.body), v.payload);
