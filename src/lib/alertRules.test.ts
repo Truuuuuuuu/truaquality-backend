@@ -380,21 +380,23 @@ describe("hold rule (Phase 7 gap closure)", () => {
     });
   });
 
-  test("H-08: open episode in recovery, one raw out-of-range reading not yet held: abnormal at the episode's severity, nobody notified", () => {
+  test("H-08: open episode in recovery, one unheld out-of-range reading (WARNING or CRITICAL): unheld, clock kept", () => {
     const open = episode({ severity: "WARNING", lastValue: 0, lastRecordedAt: at(0), nominalSince: at(-5 * MIN_MS) });
-    assert.deepEqual(decide(open, series([W, 0, 0, 0, 0])), {
-      kind: "abnormal",
-      severity: "WARNING",
-      escalated: false,
-      worsened: false,
-    });
+    assert.deepEqual(decide(open, series([W, 0, 0, 0, 0])), { kind: "unheld" });
     const critical = episode({ severity: "CRITICAL", lastValue: 0, lastRecordedAt: at(0), nominalSince: at(-MIN_MS) });
-    assert.deepEqual(decide(critical, series([C, 0, 0, 0, 0])), {
-      kind: "abnormal",
-      severity: "CRITICAL",
-      escalated: false,
-      worsened: false,
-    });
+    assert.deepEqual(decide(critical, series([C, 0, 0, 0, 0])), { kind: "unheld" });
+  });
+
+  test("ALRT-05 turbidity: a lone CRITICAL stray in a WARNING episode is unheld, and a held run during recovery is abnormal", () => {
+    const open = episode({ severity: "WARNING", lastValue: 0, lastRecordedAt: at(0), nominalSince: at(-5 * MIN_MS) });
+    assert.deepEqual(decide(open, series([C, 0, 0, 0, 0])), { kind: "unheld" });
+    const runOpen = episode({ severity: "WARNING", lastValue: W, lastRecordedAt: at(0), nominalSince: at(-5 * MIN_MS) });
+    assert.equal(decide(runOpen, series([...Array.from({ length: HOLD }, () => W), 0])).kind, "abnormal");
+  });
+
+  test("ALRT-05 turbidity: nominalSince null + unheld reading stays unheld (the clock starts only on an in-range reading)", () => {
+    const open = episode({ severity: "WARNING", lastValue: W, lastRecordedAt: at(0), nominalSince: null });
+    assert.deepEqual(decide(open, series([W, 0, W, W, W])), { kind: "unheld" });
   });
 
   test("H-09: open episode, in-range reading: recovery clock starts, resolves at ALERT_RECOVERY_MS", () => {
@@ -506,13 +508,25 @@ describe("pH — two-sided alerts (Phase 9)", () => {
     assert.deepEqual(decide(null, series(run(PARAMETER_BOUNDS.ph.max, HOLD))), { kind: "open", severity: "WARNING" });
   });
 
-  test("C-PH1 (pre-fix characterization): open pH episode in recovery, one unheld acidic reading is abnormal at the episode's severity", () => {
+  test("ALRT-05 pH: open pH episode in recovery, one unheld acidic or alkaline reading is unheld (recovery clock kept)", () => {
     const open = episode({ severity: "WARNING", lastValue: NEUTRAL, lastRecordedAt: at(0), nominalSince: at(-5 * MIN_MS) });
-    assert.deepEqual(decide(open, series([ACID, ...run(NEUTRAL, HOLD)])), {
-      kind: "abnormal",
-      severity: "WARNING",
-      escalated: false,
-      worsened: false,
+    assert.deepEqual(decide(open, series([ACID, ...run(NEUTRAL, HOLD)])), { kind: "unheld" });
+    assert.deepEqual(decide(open, series([ALKALI, ...run(NEUTRAL, HOLD)])), { kind: "unheld" });
+  });
+
+  test("ALRT-05 pH: a held run during recovery is abnormal (still restarts the clock)", () => {
+    const open = episode({ severity: "WARNING", lastValue: ACID, lastRecordedAt: at(0), nominalSince: at(-5 * MIN_MS) });
+    const step = decide(open, series([...run(ACID, HOLD), NEUTRAL]));
+    assert.equal(step.kind, "abnormal");
+  });
+
+  test("ALRT-05 pH: an in-range reading after an unheld one keeps the original nominalSince and can resolve", () => {
+    const since = at(0);
+    const open = episode({ severity: "WARNING", lastValue: ACID, lastRecordedAt: at(10 * MIN_MS - STEP), nominalSince: since });
+    assert.deepEqual(decide(open, series([NEUTRAL, ACID, NEUTRAL, NEUTRAL, NEUTRAL])), {
+      kind: "nominal",
+      nominalSince: since,
+      resolved: true,
     });
   });
 });

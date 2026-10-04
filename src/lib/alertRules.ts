@@ -31,7 +31,10 @@ export type AlertStep =
   | { kind: "stale" }
   | { kind: "open"; severity: AlertSeverity }
   | { kind: "abnormal"; severity: AlertSeverity; escalated: boolean; worsened: boolean }
-  | { kind: "nominal"; nominalSince: Date; resolved: boolean };
+  | { kind: "nominal"; nominalSince: Date; resolved: boolean }
+  // An out-of-range reading inside an open episode that is not yet held: neither a recovery reading nor a
+  // recovery breaker, so the shell records it and leaves nominalSince alone.
+  | { kind: "unheld" };
 
 export type HeldReading = { value: number; recordedAt: Date };
 
@@ -89,10 +92,24 @@ export function heldSeveritiesFor(
 //   the 3000 NTU ceiling with a floating sensor pin); if BFAR later sets a critical line below such values, an
 //   unheld CRITICAL would bring the false alarm back at the more serious level. Turbidity changes over minutes to
 //   hours, so about 2 minutes before CRITICAL is acceptable; temperature has hold 1 and stays immediate.
-// - Inside an open episode, an out-of-range reading that is not yet held is not a recovery reading either: it
-//   comes back as "abnormal" at the episode's own severity, neither escalated nor worsened, so the shell restarts
-//   the recovery clock (nominalSince = null) and notifies nobody. Recovery is still ALERT_RECOVERY_MS of in-range
-//   readings, never shortened by the hold.
+// - Recovery (Phase 9, ALRT-05): the hold also applies to the readings that break a recovery.
+//   (1) Inside an open episode, an out-of-range reading that is not yet held comes back as "unheld" and leaves
+//       nominalSince as it was; only a held run (ALERT_HOLD_READINGS consecutive out-of-range readings, no gap over
+//       ALERT_HOLD_MAX_GAP_MS) returns "abnormal" and restarts the recovery clock (D-06).
+//   (2) The held severity is the window's least severe, so a lone CRITICAL reading is unheld too and is ignored
+//       for recovery in the same way (D-07).
+//   (3) A hold-1 parameter (temperature): heldSeverityFor equals severityFor(latest), so "out of range but not
+//       held" is impossible and the unheld branch is unreachable — temperature is unchanged by construction (D-08).
+//   (4) An unheld reading never resolves an episode: resolution waits for the next in-range reading, so
+//       ALERT_RESOLVED never carries an out-of-range value.
+//   (5) If nominalSince is null (no in-range reading since the episode last held), an unheld reading keeps it
+//       null; the clock starts only on an in-range reading.
+//   (6) Accepted trade-off (D-05): a value alternating in and out of range every other reading now resolves after
+//       ALERT_RECOVERY_MS, because no out-of-range run ever forms. That is the rule — the hold applies to
+//       recovery-breaking readings — with no deadband and no new hysteresis state; opening still needs a held run.
+//   (7) Evidence: TURBIDITY_TEST_RESULTS.md §5g S-H3 and §5h T-3 — with the old rule single clean-water spikes
+//       kept resetting the 10-minute recovery on the real unit, so the episode stayed open while the tile showed
+//       Normal. Recovery is still ALERT_RECOVERY_MS of in-range readings, never shortened by the hold.
 export function decideAlertStep(
   parameter: ParameterId,
   pondType: string | null | undefined,
@@ -124,7 +141,7 @@ export function decideAlertStep(
     return { kind: "abnormal", severity, escalated, worsened };
   }
 
-  if (raw) return { kind: "abnormal", severity: open.severity, escalated: false, worsened: false };
+  if (raw) return { kind: "unheld" };
 
   const nominalSince = open.nominalSince ?? recordedAt;
   const resolved = recordedAt.getTime() - nominalSince.getTime() >= ALERT_RECOVERY_MS;

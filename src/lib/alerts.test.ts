@@ -591,7 +591,7 @@ test("S-H2: the §5f-like pattern 0, W, 0, W, W, W, 0 at 30 s opens nothing", as
   assert.equal(fake.notifications.length, 0);
 });
 
-test("S-H3: an open turbidity episode in recovery, one unheld warning reading resets nominalSince and notifies nobody", async (t) => {
+test("S-H3: an open turbidity episode in recovery, one unheld warning reading keeps nominalSince and notifies nobody", async (t) => {
   const fake = setup(t);
   seedAlert(fake, {
     parameter: "turbidity",
@@ -609,8 +609,8 @@ test("S-H3: an open turbidity episode in recovery, one unheld warning reading re
   assert.deepEqual(argsOf(fake, "tx.alert.update")[0].data, {
     lastValue: NTU_WARNING,
     lastRecordedAt: at(30_000),
-    nominalSince: null,
   });
+  assert.deepEqual(fake.alerts[0].nominalSince, minute(-3));
   assert.equal(fake.alerts[0].severity, "WARNING");
   assert.equal(fake.alerts[0].resolvedAt, null);
   assert.equal(fake.notifications.length, 0);
@@ -680,7 +680,7 @@ for (const [side, value] of [
   });
 }
 
-test("C-PH2 (pre-fix characterization): an open pH episode in recovery, one unheld acidic reading resets nominalSince and notifies nobody", async (t) => {
+test("ALRT-05 pH: an open pH episode in recovery, one unheld acidic reading keeps nominalSince and notifies nobody", async (t) => {
   const fake = setup(t);
   seedAlert(fake, {
     parameter: "ph",
@@ -698,9 +698,127 @@ test("C-PH2 (pre-fix characterization): an open pH episode in recovery, one unhe
   assert.deepEqual(argsOf(fake, "tx.alert.update")[0].data, {
     lastValue: PH_ACID,
     lastRecordedAt: at(30_000),
-    nominalSince: null,
   });
+  assert.deepEqual(fake.alerts[0].nominalSince, minute(-3));
   assert.equal(fake.alerts[0].severity, "WARNING");
+  assert.equal(fake.alerts[0].resolvedAt, null);
+  assert.equal(fake.notifications.length, 0);
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// ALRT-05 — the hold applies to recovery-breaking readings (pH and turbidity; temperature unchanged)
+// ---------------------------------------------------------------------------------------------------------
+
+// HOLD out-of-range readings, then RECOVERY_MIN + 1 in-range readings one minute apart where every 4th one is
+// replaced by a lone `stray`. The first recovery reading and the resolving one are always in range.
+function recoveryWithStrays(open: number, inRange: number, stray: number, hold: number) {
+  const recovery = Array.from({ length: RECOVERY_MIN + 1 }, (_, k) => ((k + 1) % 4 === 0 ? stray : inRange));
+  assert.notEqual(recovery[0], stray);
+  assert.notEqual(recovery[recovery.length - 1], stray);
+  return [...Array.from({ length: hold }, () => open), ...recovery];
+}
+
+test("ALRT-05 end-to-end pH: lone acidic strays during recovery no longer keep the episode open", async (t) => {
+  const fake = setup(t);
+
+  await ingestPh(recoveryWithStrays(PH_ACID, PH_NEUTRAL, PH_ACID, PH_HOLD), MIN);
+
+  assert.equal(fake.alerts.length, 1);
+  const [episode] = fake.alerts;
+  assert.equal(episode.severity, "WARNING");
+  assert.deepEqual(episode.nominalSince, minute(PH_HOLD));
+  assert.deepEqual(episode.resolvedAt, minute(PH_HOLD + RECOVERY_MIN));
+  assert.equal(episode.lastValue, PH_NEUTRAL);
+  assert.deepEqual(
+    fake.notifications.map((n) => n.kind),
+    ["ALERT_OPENED", "ALERT_RESOLVED"],
+  );
+  assert.equal(fake.notifications[1].value, PH_NEUTRAL);
+});
+
+test("ALRT-05 end-to-end turbidity: lone warning strays during recovery no longer keep the episode open", async (t) => {
+  const fake = setup(t);
+  const hold = ALERT_HOLD_READINGS.turbidity;
+
+  await ingestTurbidity(recoveryWithStrays(NTU_WARNING, NTU_NOMINAL, NTU_WARNING, hold), MIN);
+
+  assert.equal(fake.alerts.length, 1);
+  const [episode] = fake.alerts;
+  assert.equal(episode.severity, "WARNING");
+  assert.deepEqual(episode.nominalSince, minute(hold));
+  assert.deepEqual(episode.resolvedAt, minute(hold + RECOVERY_MIN));
+  assert.deepEqual(
+    fake.notifications.map((n) => n.kind),
+    ["ALERT_OPENED", "ALERT_RESOLVED"],
+  );
+  assert.equal(fake.notifications[1].value, NTU_NOMINAL);
+});
+
+test("ALRT-05 turbidity: a lone CRITICAL stray during recovery is ignored; the WARNING episode resolves on time", async (t) => {
+  const fake = setup(t);
+  const hold = ALERT_HOLD_READINGS.turbidity;
+  const values = [
+    ...Array.from({ length: hold }, () => NTU_WARNING),
+    ...Array.from({ length: RECOVERY_MIN + 1 }, (_, k) => (k === 5 ? NTU_CRITICAL : NTU_NOMINAL)),
+  ];
+
+  await ingestTurbidity(values, MIN);
+
+  assert.equal(fake.alerts.length, 1);
+  assert.equal(fake.alerts[0].severity, "WARNING");
+  assert.deepEqual(fake.alerts[0].nominalSince, minute(hold));
+  assert.deepEqual(fake.alerts[0].resolvedAt, minute(hold + RECOVERY_MIN));
+  assert.deepEqual(
+    fake.notifications.map((n) => [n.kind, n.severity]),
+    [
+      ["ALERT_OPENED", "WARNING"],
+      ["ALERT_RESOLVED", "WARNING"],
+    ],
+  );
+});
+
+test("ALRT-05 pH: a held run during recovery still restarts the recovery clock", async (t) => {
+  const fake = setup(t);
+
+  await ingestPh(
+    [
+      ...Array.from({ length: PH_HOLD }, () => PH_ACID),
+      ...Array.from({ length: 3 }, () => PH_NEUTRAL),
+      ...Array.from({ length: PH_HOLD - 1 }, () => PH_ACID),
+    ],
+    MIN,
+  );
+  // One short of a held run: still unheld, the clock from the first in-range reading is kept.
+  assert.deepEqual(fake.alerts[0].nominalSince, minute(PH_HOLD));
+
+  const nth = at((2 * PH_HOLD + 2) * MIN);
+  const result = await ingestSamples(
+    turbidityDevice(),
+    { firmwareVersion: "0.7.0", samples: [{ recordedAt: nth, values: { ph: PH_ACID } }] },
+    nth,
+  );
+  assert.deepEqual(result, { status: "stored", accepted: 1, duplicates: 0, rejected: [] });
+  assert.equal(fake.alerts[0].nominalSince, null);
+  assert.equal(fake.alerts[0].resolvedAt, null);
+  // Worse than the readings before it, but within ALERT_RENOTIFY_MS of the opening notification.
+  assert.deepEqual(
+    fake.notifications.map((n) => n.kind),
+    ["ALERT_OPENED"],
+  );
+});
+
+test("ALRT-05 pH: nominalSince null + unheld reading stays null (the clock starts only on an in-range reading)", async (t) => {
+  const fake = setup(t);
+  // A held acidic run, then an outage longer than ALERT_HOLD_MAX_GAP_MS: the reading after it is out of range but
+  // the gap breaks the run, so it is unheld while no in-range reading has started the clock yet.
+  seedAlert(fake, { parameter: "ph", severity: "WARNING", lastValue: PH_ACID, lastRecordedAt: minute(-5), nominalSince: null });
+  for (let i = 6; i >= 0; i--) seedReading(fake, PH_ACID, at(-5 * MIN - i * 30_000), "ph");
+  seedReading(fake, PH_ALKALI, at(30_000), "ph");
+
+  await evaluate(["ph"]);
+
+  assert.deepEqual(argsOf(fake, "tx.alert.update")[0].data, { lastValue: PH_ALKALI, lastRecordedAt: at(30_000) });
+  assert.equal(fake.alerts[0].nominalSince, null);
   assert.equal(fake.alerts[0].resolvedAt, null);
   assert.equal(fake.notifications.length, 0);
 });

@@ -131,6 +131,17 @@ async function evaluateParameter(pondId: string, parameter: ParameterId, pondTyp
         return;
       }
 
+      case "unheld": {
+        if (!open) throw new Error(`[alerts] "unheld" step for ${pondId}/${parameter} without an open episode`);
+        // Recovery clock untouched and nobody notified, but lastRecordedAt must still advance: the stale guard
+        // compares the next evaluation against it.
+        await tx.alert.update({
+          where: { id: open.id },
+          data: { lastValue: value, lastRecordedAt: recordedAt },
+        });
+        return;
+      }
+
       // A new AlertStep variant with no case here would otherwise fall off the end of this callback:
       // the transaction would commit having written nothing, no alert would open, escalate or resolve,
       // and nothing would log or throw. `never` turns that into a compile error, and the throw covers a
