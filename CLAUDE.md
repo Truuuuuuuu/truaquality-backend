@@ -208,6 +208,13 @@ resolution of `tsc`/`tsx`/`ts-node`:
   `--no-turbidity`) to demo a spike (e.g. 400) or the 3000 NTU sensor ceiling.
   `--temperature <°C>` likewise pins temperature (validated -5..60, `PARAMETER_BOUNDS`) to step through the BFAR
   bands on demand (e.g. 25 normal, 32 WARNING, 37 CRITICAL).
+  pH (Phase 9) follows a compressed daily sine (dawn ~6.2, afternoon ~9.8) over `--ph-day <minutes>` (default 40,
+  the shortest day whose in-range stretch outlasts `ALERT_RECOVERY_MS`, so one cycle opens and resolves an acidic
+  then an alkaline alert; keep `--interval` <= 90 s), each unit at a different phase. `--ph <pH>` pins it (0..14),
+  `--no-ph` drops it and sends `firmwareVersion` 0.6.1 (otherwise 0.7.0). `--spike <param>=<value>:<everyN>`
+  (repeatable) replaces that parameter's value on every Nth report to demo stray readings, and `--dry-run <reports>`
+  prints unsigned bodies on a simulated clock without connecting. The curve/spike/timing math is the pure, tested
+  `src/lib/simulatorSignals.ts`.
 - `npm run purge:parameters -- --parameter <id> [--parameter ...] [--apply]` (`scripts/purge-parameters.ts`)
   deletes the stored readings, hourly summaries, and alerts (plus their notifications) of a parameter that has
   been removed from `PARAMETER_BOUNDS`. Dry run unless `--apply`; refuses live parameter ids.
