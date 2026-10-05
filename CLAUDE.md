@@ -199,7 +199,11 @@ resolution of `tsc`/`tsx`/`ts-node`:
 - `npm run simulate:devices -- --device <deviceId>:<deviceSecret> [--device ...] [--interval 60] [--no-turbidity] [--turbidity <ntu>] [--temperature <°C>] [--ph <pH>] [--no-ph] [--ph-day 40] [--spike <param>=<value>:<everyN> ...] [--fault <param>=<status> ...] [--dry-run <n>]`
   (`scripts/simulate-devices.ts`) is **dev only**: it publishes synthetic, correctly signed readings to the
   MQTT broker as if it were ESP32 units, so the multi-pond UI can be tested before hardware is installed. Never
-  point it at a production broker. Every message carries integer `diag` and a `sensors` map in the 0.6.x wire shape;
+  point it at a production broker. It needs a **publish-capable** broker credential: run it with the units' shared one
+  (from `firmware/include/unit_config.h`) passed as shell env (`MQTT_USERNAME=... MQTT_PASSWORD=... npm run
+  simulate:devices ...`; shell vars win over dotenv). The backend's own `.env` credential may be subscribe-only, and
+  then HiveMQ closes the connection after each PUBLISH and the script hangs on its first QoS 1 publish with no error
+  (seen in 09-08). Every message carries integer `diag` and a `sensors` map in the 0.6.x wire shape;
   `--fault <parameter>=<status>` (repeatable, status validated against `SENSOR_STATUSES`) reports that sensor with
   that status and omits its value, to demo a SENSOR_FAULT (restart without it to see SENSOR_RECOVERED). Each unit
   reports temperature then turbidity (0.1 NTU steps, drifting 0..60 NTU across the 25 NTU safe line to demo a
