@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { ingestSchema } from "./ingest.ts";
+import { SENSOR_STATUSES, ingestSchema } from "./ingest.ts";
 
 // The recordedAt refine reads Date.now() internally, so tests touching recordedAt freeze the clock with
 // mock.timers instead of racing the wall clock.
@@ -93,6 +93,21 @@ describe("ingestSchema", () => {
     test("turbidity is accepted before it is a known parameter", () => {
       const parsed = ingestSchema.parse({ sensors: { temperature: "ok", turbidity: "no_signal" }, samples: [sample] });
       assert.deepEqual(parsed.sensors, { temperature: "ok", turbidity: "no_signal" });
+    });
+    test("0.7.0 sensors map with ph and a sample with a ph value parse", () => {
+      const parsed = ingestSchema.parse({
+        firmwareVersion: "0.7.0",
+        sensors: { temperature: "ok", turbidity: "ok", ph: "ok" },
+        samples: [{ recordedAt: RECORDED_AT, values: { temperature: 27, turbidity: 3.2, ph: 7.1 } }],
+      });
+      assert.deepEqual(parsed.sensors, { temperature: "ok", turbidity: "ok", ph: "ok" });
+      assert.equal(parsed.samples[0]!.values.ph, 7.1);
+    });
+    test("SENSOR_STATUSES is unchanged by pH (D-03: no new token)", () => {
+      assert.deepEqual(
+        [...SENSOR_STATUSES],
+        ["ok", "not_found", "disconnected", "power_on_value", "no_signal", "uncalibrated", "over_range"],
+      );
     });
     test("an unknown status is rejected", () => {
       assert.equal(ingestSchema.safeParse({ sensors: { temperature: "broken" }, samples: [sample] }).success, false);

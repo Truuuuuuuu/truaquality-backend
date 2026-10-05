@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import type { Device } from "../generated/prisma/client.ts";
 import { createPrismaFake } from "../testing/prismaFake.ts";
@@ -533,4 +533,123 @@ test("a backlog flush stores every sample and advances lastSeenAt to the newest 
   const [update] = argsOf(fake, "device.update");
   assert.equal(update.data.lastSeenAt.getTime(), minute(-1).getTime());
   assert.equal(update.data.firmwareVersion, "0.6.0");
+});
+
+// D-04 / DATA-05: during the pH rollout the fleet runs both firmware generations at once. 0.6.1 units send no pH
+// value and no sensors.ph; 0.7.0 units send both. Ingest is per value and sensors keys are regex-validated, so
+// neither shape may lose a reading.
+describe("mixed firmware (DATA-05)", () => {
+  const NOMINAL_PH = 7.1;
+  const v061 = (recordedAt: Date): Message => ({
+    firmwareVersion: "0.6.1",
+    sensors: { temperature: "ok", turbidity: "ok" },
+    samples: [{ recordedAt, values: { temperature: 28, turbidity: 3.2 } }],
+  });
+  const v070 = (recordedAt: Date): Message => ({
+    firmwareVersion: "0.7.0",
+    sensors: { temperature: "ok", turbidity: "ok", ph: "ok" },
+    samples: [{ recordedAt, values: { temperature: 28, turbidity: 3.2, ph: NOMINAL_PH } }],
+  });
+
+  test("0.6.1 message (no pH) stores both readings, rejects none", async (t) => {
+    const fake = createPrismaFake();
+    fake.install(t);
+
+    const result = await ingestSamples(device(), v061(minute(0)), minute(0));
+
+    assert.deepEqual(result, { status: "stored", accepted: 2, duplicates: 0, rejected: [] });
+    assert.deepEqual(
+      fake.readings.map((r) => r.parameter),
+      ["temperature", "turbidity"],
+    );
+  });
+
+  test("0.7.0 message (with pH) stores three readings and evaluates a pH alert", async (t) => {
+    const fake = createPrismaFake();
+    fake.install(t);
+
+    const result = await ingestSamples(device(), v070(minute(0)), minute(0));
+
+    assert.deepEqual(result, { status: "stored", accepted: 3, duplicates: 0, rejected: [] });
+    assert.deepEqual(
+      fake.readings.map((r) => [r.parameter, r.value]),
+      [
+        ["temperature", 28],
+        ["turbidity", 3.2],
+        ["ph", NOMINAL_PH],
+      ],
+    );
+    assert.deepEqual(fake.ops(), [
+      "device.update",
+      "reading.createMany",
+      "pond.findUnique",
+      "$transaction",
+      "tx.$executeRaw",
+      "tx.reading.findFirst",
+      "tx.alert.findFirst",
+      "$transaction",
+      "tx.$executeRaw",
+      "tx.reading.findFirst",
+      "tx.reading.findMany",
+      "tx.alert.findFirst",
+      // pH is held (ALERT_HOLD_READINGS 4), so it looks back like turbidity does.
+      "$transaction",
+      "tx.$executeRaw",
+      "tx.reading.findFirst",
+      "tx.reading.findMany",
+      "tx.alert.findFirst",
+    ]);
+    assert.deepEqual(
+      argsOf(fake, "tx.$executeRaw").map((l) => l.values[0]),
+      ["alert:pond-1:temperature", "alert:pond-1:turbidity", "alert:pond-1:ph"],
+    );
+    const [update] = argsOf(fake, "device.update");
+    assert.deepEqual(update.data.sensorStatus, { temperature: "ok", turbidity: "ok", ph: "ok" });
+    assert.equal(fake.alerts.length, 0);
+  });
+
+  test("0.6.1 then 0.7.0 from the same device: all five readings stored", async (t) => {
+    const fake = createPrismaFake();
+    fake.install(t);
+
+    const first = await ingestSamples(device(), v061(minute(0)), minute(0));
+    const second = await ingestSamples(
+      device({ firmwareVersion: "0.6.1", lastSeenAt: minute(0) }),
+      v070(minute(1)),
+      minute(1),
+    );
+
+    assert.deepEqual(first, { status: "stored", accepted: 2, duplicates: 0, rejected: [] });
+    assert.deepEqual(second, { status: "stored", accepted: 3, duplicates: 0, rejected: [] });
+    assert.equal(fake.readings.length, 5);
+    assert.deepEqual(
+      fake.deviceEvents.map((e) => [e.kind, e.detail]),
+      [["FIRMWARE_CHANGED", "0.6.1 → 0.7.0"]],
+    );
+  });
+
+  test("0.7.0 with sensors.ph no_signal and no pH value: other readings stored, SENSOR_FAULT for ph", async (t) => {
+    const fake = createPrismaFake();
+    fake.install(t);
+
+    const faulted: Message = {
+      firmwareVersion: "0.7.0",
+      sensors: { temperature: "ok", turbidity: "ok", ph: "no_signal" },
+      samples: [{ recordedAt: minute(0), values: { temperature: 28, turbidity: 3.2 } }],
+    };
+    const result = await ingestSamples(
+      device({ firmwareVersion: "0.7.0", sensorStatus: { temperature: "ok", turbidity: "ok", ph: "ok" } }),
+      faulted,
+      minute(0),
+    );
+
+    assert.deepEqual(result, { status: "stored", accepted: 2, duplicates: 0, rejected: [] });
+    assert.deepEqual(
+      fake.readings.map((r) => r.parameter),
+      ["temperature", "turbidity"],
+    );
+    assert.deepEqual(fake.deviceEvents, [
+      { deviceId: DEVICE_ID, kind: "SENSOR_FAULT", parameter: "ph", detail: "no_signal", createdAt: minute(0) },
+    ]);
+  });
 });
