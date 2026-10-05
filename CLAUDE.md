@@ -196,7 +196,7 @@ resolution of `tsc`/`tsx`/`ts-node`:
   3. If the DB write fails, delete the Supabase user so no orphaned login remains.
   The invite link lands on `INVITE_REDIRECT_URL` (a frontend page where the user sets a password). That URL
   must be in Supabase's allowed redirect URLs.
-- `npm run simulate:devices -- --device <deviceId>:<deviceSecret> [--device ...] [--interval 60] [--no-turbidity] [--turbidity <ntu>] [--temperature <°C>]`
+- `npm run simulate:devices -- --device <deviceId>:<deviceSecret> [--device ...] [--interval 60] [--no-turbidity] [--turbidity <ntu>] [--temperature <°C>] [--ph <pH>] [--no-ph] [--ph-day 40] [--spike <param>=<value>:<everyN> ...] [--fault <param>=<status> ...] [--dry-run <n>]`
   (`scripts/simulate-devices.ts`) is **dev only**: it publishes synthetic, correctly signed readings to the
   MQTT broker as if it were ESP32 units, so the multi-pond UI can be tested before hardware is installed. Never
   point it at a production broker. Every message carries integer `diag` and a `sensors` map in the 0.6.x wire shape;
@@ -277,7 +277,8 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
       deep_sleep | external | unknown`.
     - `sensors`: `{ "<parameter>": "<status>" }`, stored as `Device.sensorStatus` (Json). Status tokens
       (`SENSOR_STATUSES`): `ok | not_found | disconnected | power_on_value` (temperature), `no_signal | uncalibrated |
-      over_range` (turbidity). A sensor whose status isn't `ok` has its value omitted from the sample. Keys are a
+      over_range` (turbidity); pH (firmware 0.7.0) reuses the shared tokens, and a unit without a pH probe fitted
+      omits both `values.ph` and `sensors.ph`, so 0.6.x bodies are unchanged. A sensor whose status isn't `ok` has its value omitted from the sample. Keys are a
       bounded id regex (max 8), not `PARAMETER_IDS`, so a sensor reported before it's a known parameter never
       rejects the whole signed message.
     - `Device.diagnosticsAt` is the newest signed sample time of the last applied message carrying either.
@@ -389,12 +390,17 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
 - **Thresholds depend on the pond's type, and the backend owns them.** `PARAMETER_THRESHOLDS` in
   `src/lib/parameters.ts` is keyed by `FRESHWATER` / `BRACKISH` / `SALTWATER` / `UNSET` (for a pond whose
   `pondType` is still null), because a single global salinity range once made every freshwater pond
-  permanently `CRITICAL`. Salinity (and dissolved oxygen) have since been removed — temperature and turbidity are
+  permanently `CRITICAL`. Salinity (and dissolved oxygen) have since been removed — temperature, turbidity and pH are
   the parameters (turbidity added in Phase 4: safeMax 25 NTU from BFAR (BFAR Sorsogon (client agency), "Turbidity
   Aquaculture <25 NTU" reference), criticalMax `TURBIDITY_CRITICAL_MAX_NTU` = 3000 pending BFAR with
   `criticalPending: true` so turbidity is warning-only, no low-side band; turbidity bounds 0..4000 NTU in
   `PARAMETER_BOUNDS` — the firmware clamps to 0..3000 and omits the value on a fault, so 4000 is headroom for
-  a curve refit) — so every profile points at the same `SHARED` table; a parameter
+  a curve refit). **pH** joined in Phase 9 (`ph`, the wire id): bounds 0..14, BFAR safe band 6.5–9.5 on both sides,
+  critical lines `PH_CRITICAL_MIN`/`PH_CRITICAL_MAX` = 0/14 are PENDING BFAR placeholders equal to the bounds (so
+  they never fire and pH is warning-only, `criticalPending: true`), `ALERT_HOLD_READINGS.ph` = 4 is PROVISIONAL
+  until the Phase 10 real-sensor soak (ALRT-06), and `PARAMETER_DISPLAY.ph` is unitless (label/header "pH",
+  precision 2, `sentenceLabel` "pH" so sentences read "pH averaged ..." rather than lowercasing it). All three
+  share one range across pond types, so every profile points at the same `SHARED` table; a parameter
   whose safe range does depend on pond type overrides it per profile. Resolve with `thresholdsFor(pondType)`
   and judge with `severityFor(parameter, value, pondType)`.
   - **The frontend keeps no copy.** `GET /ponds` and `GET /ponds/:id` return a resolved `thresholds` map on
@@ -409,7 +415,8 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
     `heldSeveritiesFor` (`src/lib/alertRules.ts`) from that pond's last `ALERT_HOLD_READINGS[parameter]` readings.
     The dashboard colors tiles and the pond status by it, so a tile turns amber exactly when the alert would open
     and the frontend never knows the hold count. `latest` and `thresholds` are unchanged.
-    `GET /notifications` likewise computes each row's `direction` (`"low"`/`"high"`) server-side.
+    `GET /notifications` likewise computes each row's `direction` (`"low"`/`"high"`) server-side, via the pure,
+    tested `src/lib/notificationDirection.ts` (Phase 9; works for the two-sided pH band as well as one-sided turbidity).
 - **Alerts and notifications** (`src/lib/alerts.ts`). After ingest stores new readings, `evaluatePondAlerts()`
   reads the pond's `pondType` once, then re-checks each touched parameter against that type's thresholds.
   - An `Alert` is one out-of-range **episode** per pond/parameter, not one row per bad reading: opened by the first
