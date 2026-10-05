@@ -4,6 +4,7 @@ import { Prisma, type AlertSeverity } from "../generated/prisma/client.ts";
 import { deviceSummarySelect, reportedStatuses } from "../lib/devices.ts";
 import { heldSeveritiesFor, type HeldReading } from "../lib/alertRules.ts";
 import { ALERT_HOLD_READINGS, isParameterId, PARAMETER_IDS, type ParameterId, thresholdsFor } from "../lib/parameters.ts";
+import { loadOpenAlerts, type PondOpenAlerts } from "../lib/openAlerts.ts";
 import { prisma } from "../lib/prisma.ts";
 import { analyzePondRange, loadSeries } from "../lib/pondAnalysis.ts";
 import { streamReadingsExport, validateExportRange } from "../lib/readingsExport.ts";
@@ -87,7 +88,7 @@ const pondDeviceSelect = { ...deviceSummarySelect, sensorStatus: true } satisfie
 
 type PondWithDevice = Prisma.PondGetPayload<{ include: { device: { select: typeof pondDeviceSelect } } }>;
 
-function toPondPayload(pond: PondWithDevice, recent: PondRecent) {
+function toPondPayload(pond: PondWithDevice, recent: PondRecent, openAlerts: PondOpenAlerts) {
   const { device, ...rest } = pond;
   let summary: Omit<NonNullable<PondWithDevice["device"]>, "sensorStatus"> | null = null;
   let sensorStatus: Record<string, string> = {};
@@ -104,6 +105,8 @@ function toPondPayload(pond: PondWithDevice, recent: PondRecent) {
     latest: latestOf(recent),
     thresholds: thresholdsFor(pond.pondType),
     heldSeverity: heldSeverityOf(pond.pondType, recent),
+    // Unresolved alert episodes per parameter, archived ponds included (the frontend decides what to show).
+    openAlerts,
     sensorStatus,
   };
 }
@@ -113,8 +116,9 @@ pondsRouter.get("/", async (_req, res) => {
     orderBy: { name: "asc" },
     include: { device: { select: pondDeviceSelect } },
   });
-  const recent = await recentReadingsByPond(ponds.map((pond) => pond.id));
-  res.json({ ponds: ponds.map((pond) => toPondPayload(pond, recent.get(pond.id) ?? {})) });
+  const ids = ponds.map((pond) => pond.id);
+  const [recent, open] = await Promise.all([recentReadingsByPond(ids), loadOpenAlerts(ids)]);
+  res.json({ ponds: ponds.map((pond) => toPondPayload(pond, recent.get(pond.id) ?? {}, open.get(pond.id) ?? {})) });
 });
 
 pondsRouter.get("/:id", validate(pondIdParams, "params"), async (req, res) => {
@@ -128,8 +132,8 @@ pondsRouter.get("/:id", validate(pondIdParams, "params"), async (req, res) => {
     return res.status(404).json({ error: "pond not found" });
   }
 
-  const recent = await recentReadingsByPond([id]);
-  res.json({ pond: toPondPayload(pond, recent.get(id) ?? {}) });
+  const [recent, open] = await Promise.all([recentReadingsByPond([id]), loadOpenAlerts([id])]);
+  res.json({ pond: toPondPayload(pond, recent.get(id) ?? {}, open.get(id) ?? {}) });
 });
 
 // Newest-first, keyset-paginated log of raw readings (what the pond detail page's history table shows).

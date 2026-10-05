@@ -419,6 +419,13 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
     `heldSeveritiesFor` (`src/lib/alertRules.ts`) from that pond's last `ALERT_HOLD_READINGS[parameter]` readings.
     The dashboard colors tiles and the pond status by it, so a tile turns amber exactly when the alert would open
     and the frontend never knows the hold count. `latest` and `thresholds` are unchanged.
+  - Each pond in `GET /ponds` / `GET /ponds/:id` also carries `openAlerts`: `{ [parameter]: "WARNING" | "CRITICAL" }`
+    for every unresolved `Alert` (`resolvedAt` null), the worse severity if two were ever open, `{}` when none
+    (archived ponds included; the frontend hides it for them). Loaded for all ponds in one batched `findMany` by
+    `loadOpenAlerts` (`src/lib/openAlerts.ts`; the pure shaping `openAlertsByPond` is tested in
+    `openAlerts.test.ts`). It exists because the tile colour follows the held verdict, so an episode can stay open
+    while the newest readings are short of the hold (the card is green, the alert is not resolved); the dashboard
+    shows it as an "alert open" chip beside the pond status.
     `GET /notifications` likewise computes each row's `direction` (`"low"`/`"high"`) server-side, via the pure,
     tested `src/lib/notificationDirection.ts` (Phase 9; works for the two-sided pH band as well as one-sided turbidity).
 - **Alerts and notifications** (`src/lib/alerts.ts`). After ingest stores new readings, `evaluatePondAlerts()`
