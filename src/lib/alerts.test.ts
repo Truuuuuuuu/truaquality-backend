@@ -710,11 +710,14 @@ test("ALRT-05 pH: an open pH episode in recovery, one unheld acidic reading keep
 // ---------------------------------------------------------------------------------------------------------
 
 // HOLD out-of-range readings, then RECOVERY_MIN + 1 in-range readings one minute apart where every 4th one is
-// replaced by a lone `stray`. The first recovery reading and the resolving one are always in range.
+// replaced by a lone `stray`. The first recovery reading is in range, and so are the last `hold` (the window the
+// resolving reading closes must be clean, 09-REVIEW WR-01), so the strays sit mid-recovery.
 function recoveryWithStrays(open: number, inRange: number, stray: number, hold: number) {
-  const recovery = Array.from({ length: RECOVERY_MIN + 1 }, (_, k) => ((k + 1) % 4 === 0 ? stray : inRange));
+  const length = RECOVERY_MIN + 1;
+  const recovery = Array.from({ length }, (_, k) => ((k + 1) % 4 === 0 && k < length - hold ? stray : inRange));
   assert.notEqual(recovery[0], stray);
-  assert.notEqual(recovery[recovery.length - 1], stray);
+  assert.ok(recovery.slice(-hold).every((v) => v === inRange));
+  assert.ok(recovery.includes(stray));
   return [...Array.from({ length: hold }, () => open), ...recovery];
 }
 
@@ -752,6 +755,26 @@ test("ALRT-05 end-to-end turbidity: lone warning strays during recovery no longe
     ["ALERT_OPENED", "ALERT_RESOLVED"],
   );
   assert.equal(fake.notifications[1].value, NTU_NOMINAL);
+});
+
+test("WR-01 end-to-end pH: a stray inside the last hold window at the end of recovery delays resolution until HOLD in-range readings follow it", async (t) => {
+  const fake = setup(t);
+  // The stray lands one minute before the episode would have resolved; the episode then resolves on the HOLD-th
+  // in-range reading after it, not on the first.
+  const strayAt = RECOVERY_MIN - 1;
+  const recovery = Array.from({ length: strayAt + PH_HOLD + 1 }, (_, k) => (k === strayAt ? PH_ACID : PH_NEUTRAL));
+
+  await ingestPh([...Array.from({ length: PH_HOLD }, () => PH_ACID), ...recovery], MIN);
+
+  assert.equal(fake.alerts.length, 1);
+  const [episode] = fake.alerts;
+  assert.deepEqual(episode.nominalSince, minute(PH_HOLD));
+  assert.deepEqual(episode.resolvedAt, minute(PH_HOLD + strayAt + PH_HOLD));
+  assert.deepEqual(
+    fake.notifications.map((n) => n.kind),
+    ["ALERT_OPENED", "ALERT_RESOLVED"],
+  );
+  assert.equal(fake.notifications[1].value, PH_NEUTRAL);
 });
 
 test("ALRT-05 turbidity: a lone CRITICAL stray during recovery is ignored; the WARNING episode resolves on time", async (t) => {

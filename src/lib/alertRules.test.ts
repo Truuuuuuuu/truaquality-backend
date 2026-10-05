@@ -520,13 +520,51 @@ describe("pH — two-sided alerts (Phase 9)", () => {
     assert.equal(step.kind, "abnormal");
   });
 
-  test("ALRT-05 pH: an in-range reading after an unheld one keeps the original nominalSince and can resolve", () => {
+  test("ALRT-05 pH: an in-range reading right after an unheld one keeps nominalSince but does not resolve (WR-01)", () => {
     const since = at(0);
     const open = episode({ severity: "WARNING", lastValue: ACID, lastRecordedAt: at(10 * MIN_MS - STEP), nominalSince: since });
     assert.deepEqual(decide(open, series([NEUTRAL, ACID, NEUTRAL, NEUTRAL, NEUTRAL])), {
       kind: "nominal",
       nominalSince: since,
+      resolved: false,
+    });
+  });
+
+  test("WR-01: a drift of HOLD-1 unheld readings at the end of recovery, then one noisy in-range reading, does not resolve", () => {
+    const since = at(0);
+    const open = episode({ severity: "WARNING", lastValue: ACID, lastRecordedAt: at(10 * MIN_MS - STEP), nominalSince: since });
+    // Recovery time has passed (10 min since nominalSince), but the hold window ending at the in-range reading
+    // still holds HOLD-1 acidic readings.
+    assert.deepEqual(decide(open, series([NEUTRAL, ...run(ACID, HOLD - 1), NEUTRAL])), {
+      kind: "nominal",
+      nominalSince: since,
+      resolved: false,
+    });
+    // An out-of-range reading anywhere inside the last hold window blocks resolution...
+    for (let i = 1; i < HOLD; i++) {
+      const values = run(NEUTRAL, HOLD + 1);
+      values[i] = ALKALI;
+      assert.equal((decide(open, series(values)) as { resolved?: boolean }).resolved, false, `alkaline at ${i}`);
+    }
+    // ...but one just outside it does not.
+    const outside = run(NEUTRAL, HOLD + 1);
+    outside[HOLD] = ACID;
+    assert.deepEqual(decide(open, series(outside)), { kind: "nominal", nominalSince: since, resolved: true });
+  });
+
+  test("WR-01: HOLD in-range readings in a row after recovery time resolve", () => {
+    const since = at(0);
+    const open = episode({ severity: "WARNING", lastValue: NEUTRAL, lastRecordedAt: at(10 * MIN_MS - STEP), nominalSince: since });
+    assert.deepEqual(decide(open, series([...run(NEUTRAL, HOLD), ACID])), {
+      kind: "nominal",
+      nominalSince: since,
       resolved: true,
+    });
+    // A clean window still waits for ALERT_RECOVERY_MS.
+    assert.deepEqual(decide(open, series(run(NEUTRAL, HOLD + 1), at(10 * MIN_MS - 1))), {
+      kind: "nominal",
+      nominalSince: since,
+      resolved: false,
     });
   });
 });

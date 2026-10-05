@@ -100,12 +100,18 @@ export function heldSeveritiesFor(
 //       for recovery in the same way (D-07).
 //   (3) A hold-1 parameter (temperature): heldSeverityFor equals severityFor(latest), so "out of range but not
 //       held" is impossible and the unheld branch is unreachable — temperature is unchanged by construction (D-08).
-//   (4) An unheld reading never resolves an episode: resolution waits for the next in-range reading, so
-//       ALERT_RESOLVED never carries an out-of-range value.
+//   (4) An unheld reading never resolves an episode, and neither does an in-range reading that comes right after
+//       one: an episode resolves only when ALERT_RECOVERY_MS has passed since nominalSince AND the hold window
+//       ending at the latest reading (it plus the ALERT_HOLD_READINGS - 1 readings before it) is entirely in range.
+//       So ALERT_RESOLVED never carries an out-of-range value, and a drift that starts near the end of recovery
+//       (a few unheld readings, then one noisy in-range one) cannot close the episode just before it opens a new
+//       one (09-REVIEW WR-01). The window comes from `earlier`, which the shell already fetches: no new state. For
+//       temperature (hold 1) the window is the latest reading alone, so resolution is unchanged.
 //   (5) If nominalSince is null (no in-range reading since the episode last held), an unheld reading keeps it
 //       null; the clock starts only on an in-range reading.
-//   (6) Accepted trade-off (D-05): a value alternating in and out of range every other reading now resolves after
-//       ALERT_RECOVERY_MS, because no out-of-range run ever forms. That is the rule — the hold applies to
+//   (6) Accepted trade-off (D-05): a value alternating in and out of range every other reading keeps nominalSince
+//       running, because no out-of-range run ever forms, and resolves once ALERT_RECOVERY_MS has passed and the
+//       last ALERT_HOLD_READINGS readings are all in range. That is the rule — the hold applies to
 //       recovery-breaking readings — with no deadband and no new hysteresis state; opening still needs a held run.
 //   (7) Evidence: TURBIDITY_TEST_RESULTS.md §5g S-H3 and §5h T-3 — with the old rule single clean-water spikes
 //       kept resetting the 10-minute recovery on the real unit, so the episode stayed open while the tile showed
@@ -143,8 +149,14 @@ export function decideAlertStep(
 
   if (raw) return { kind: "unheld" };
 
+  // Resolution also needs the hold window ending at this reading to be clean (point (4) above): `earlier` holds the
+  // readings just before it, so HOLD - 1 of them complete the window. Empty for temperature (hold 1).
+  const hold = ALERT_HOLD_READINGS[parameter];
+  const windowClean = earlier
+    .slice(0, Math.max(0, hold - 1))
+    .every((reading) => severityFor(parameter, reading.value, pondType) === null);
   const nominalSince = open.nominalSince ?? recordedAt;
-  const resolved = recordedAt.getTime() - nominalSince.getTime() >= ALERT_RECOVERY_MS;
+  const resolved = windowClean && recordedAt.getTime() - nominalSince.getTime() >= ALERT_RECOVERY_MS;
   return { kind: "nominal", nominalSince, resolved };
 }
 

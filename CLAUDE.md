@@ -446,7 +446,12 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
     is the least severe of the run (C, C, C, W is WARNING). Recovery stays `ALERT_RECOVERY_MS`, and since Phase 9
     (ALRT-05) the hold also applies to recovery-breaking readings: an unheld out-of-range reading inside an open
     episode is an `"unheld"` step that writes only `lastValue`/`lastRecordedAt`, keeps `nominalSince` and notifies
-    nobody; only a held run restarts the recovery clock. Temperature (hold 1) can never be unheld, so it is unchanged. The pure rule is `heldSeverityFor` / `heldSeveritiesFor` in `alertRules.ts`; the shell's
+    nobody; only a held run restarts the recovery clock. An episode then resolves only when `ALERT_RECOVERY_MS` has
+    passed since `nominalSince` **and** the hold window ending at the newest reading (its last
+    `ALERT_HOLD_READINGS[parameter]` readings) is all in range, so a stray or a starting drift at the end of recovery
+    delays the resolve instead of closing the episode on one noisy in-range reading (09-REVIEW WR-01; no new state —
+    the window comes from the shell's existing lookback). Temperature (hold 1) can never be unheld and its window is the
+    newest reading alone, so it is unchanged. The pure rule is `heldSeverityFor` / `heldSeveritiesFor` in `alertRules.ts`; the shell's
     extra lookback (`tx.reading.findMany`, `take` = hold) runs only for parameters with hold > 1, so temperature
     issues no extra query. The turbidity shell traces in `alerts.test.ts` / `ingest.test.ts` changed on purpose in
     07-06 (they gained `tx.reading.findMany`); temperature traces are untouched.

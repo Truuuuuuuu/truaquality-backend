@@ -98,7 +98,8 @@ const SHARED: Record<ParameterId, Threshold> = {
 // - temperature 1: the DS18B20 has shown no such spikes and a temperature alert must stay immediate.
 // - ph 4: PROVISIONAL, same as turbidity — about 2 minutes at the firmware's 30 s interval, so a single noisy
 //   analog read cannot open an alert. The real count comes from the Phase 10 soak (ALRT-06). It also sets how many
-//   in-range readings in a row recovery needs, so it governs recovery tolerance too (D-06).
+//   in-range readings in a row recovery ends on: an episode resolves only once ALERT_RECOVERY_MS has passed AND its
+//   last N readings are all in range (alertRules.decideAlertStep), so it governs recovery tolerance too (D-06).
 export const ALERT_HOLD_READINGS: Record<ParameterId, number> = { temperature: 1, turbidity: 4, ph: 4 };
 
 // Two readings further apart than this break a held run. A sensor fault sends no value (no Reading row) and an
