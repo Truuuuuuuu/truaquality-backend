@@ -1,5 +1,12 @@
 import type { AlertSeverity } from "../generated/prisma/client.ts";
-import { ALERT_HOLD_MAX_GAP_MS, ALERT_HOLD_READINGS, severityFor, type ParameterId } from "./parameters.ts";
+import {
+  ALERT_HOLD_MAX_GAP_MS,
+  ALERT_HOLD_READINGS,
+  PARAMETER_BOUNDS,
+  severityFor,
+  thresholdsFor,
+  type ParameterId,
+} from "./parameters.ts";
 
 // The pure half of alert evaluation: given the open episode (if any) and the pond parameter's newest stored
 // reading, decide what happens. No database, no notifications — the caller (lib/alerts.ts) owns the
@@ -30,13 +37,52 @@ export type AlertStep =
   | { kind: "none" }
   | { kind: "stale" }
   | { kind: "open"; severity: AlertSeverity }
-  | { kind: "abnormal"; severity: AlertSeverity; escalated: boolean; worsened: boolean }
+  // sideEntered is set only for a two-sided held parameter (pH), on the reading that completes a held window lying
+  // entirely on one side of the safe band when the window before it did not; see decideAlertStep.
+  | { kind: "abnormal"; severity: AlertSeverity; escalated: boolean; worsened: boolean; sideEntered?: AlertSide }
   | { kind: "nominal"; nominalSince: Date; resolved: boolean }
   // An out-of-range reading inside an open episode that is not yet held: neither a recovery reading nor a
   // recovery breaker, so the shell records it and leaves nominalSince alone.
   | { kind: "unheld" };
 
 export type HeldReading = { value: number; recordedAt: Date };
+
+export type AlertSide = "low" | "high";
+
+// Which side of the safe band a value is on; null when it is in range.
+function sideOf(parameter: ParameterId, value: number, pondType: string | null | undefined): AlertSide | null {
+  const { safeMin, safeMax } = thresholdsFor(pondType)[parameter];
+  if (value < safeMin) return "low";
+  if (value > safeMax) return "high";
+  return null;
+}
+
+// A parameter whose side can change within one episode: it has a low side a stored reading can reach (its safe
+// floor sits above its physical lower bound, so not turbidity) and a hold over 1. Temperature is two-sided too but
+// held at 1, and is left out on purpose: a pond's water cannot swing across the 20-30 °C band within one unresolved
+// episode, and its traces stay exactly as they were.
+function tracksSide(parameter: ParameterId, pondType: string | null | undefined): boolean {
+  return (
+    ALERT_HOLD_READINGS[parameter] > 1 && thresholdsFor(pondType)[parameter].safeMin > PARAMETER_BOUNDS[parameter].min
+  );
+}
+
+// The side the newest ALERT_HOLD_READINGS readings (newest first) all share, or null if there are fewer of them,
+// any is in range, or they mix sides.
+function uniformSide(
+  parameter: ParameterId,
+  pondType: string | null | undefined,
+  recent: readonly HeldReading[],
+): AlertSide | null {
+  const hold = ALERT_HOLD_READINGS[parameter];
+  if (recent.length < hold) return null;
+  const side = sideOf(parameter, recent[0].value, pondType);
+  if (!side) return null;
+  for (let i = 1; i < hold; i++) {
+    if (sideOf(parameter, recent[i].value, pondType) !== side) return null;
+  }
+  return side;
+}
 
 // The severity a parameter counts as having once the hold rule (ALERT_HOLD_READINGS) is applied. `recent` must be
 // newest first. With hold 1 (temperature) this is exactly severityFor(latest). With hold N it is null unless the N
@@ -116,6 +162,23 @@ export function heldSeveritiesFor(
 //   (7) Evidence: TURBIDITY_TEST_RESULTS.md §5g S-H3 and §5h T-3 — with the old rule single clean-water spikes
 //       kept resetting the 10-minute recovery on the real unit, so the episode stayed open while the tile showed
 //       Normal. Recovery is still ALERT_RECOVERY_MS of in-range readings, never shortened by the hold.
+// - Two-sided parameters (pH, 09-REVIEW WR-02). There is one episode per pond and parameter, so an acidic episode
+//   that has not resolved yet also receives a later alkaline run. Severity alone cannot tell them apart (WARNING to
+//   WARNING is neither an escalation nor, mid-run, a worsening), so a side change would be throttled by
+//   ALERT_RENOTIFY_MS or not notified at all, and the feed would keep saying "too low".
+//   (1) A held run still only needs every reading out of range; one that mixes acidic and alkaline readings (a
+//       floating or failing analog front end) is held and opens or keeps the episode as before, its direction taken
+//       from the latest value. Requiring one side would let exactly that fault suppress the alert.
+//   (2) On the reading that completes a held window lying entirely on one side, when the window before it did not,
+//       the step carries `sideEntered`. The shell then compares that side with the episode's last notification
+//       (Notification.value, already stored) and, if it is the other side, notifies without the ALERT_RENOTIFY_MS
+//       throttle — like an escalation, a side change is news nobody should hear half an hour late. No new state:
+//       the episode's last notified side is read from the row the throttle check already looks up.
+//   (3) Each such notification needs a full one-sided window that differs from the last notified side, so a probe
+//       alternating reading by reading notifies nothing extra; a probe producing whole windows on alternating
+//       sides notifies once per side change, which is what it is reporting.
+//   (4) Turbidity cannot go low and temperature is held at 1 (see tracksSide), so neither ever gets sideEntered
+//       and both behave exactly as before.
 export function decideAlertStep(
   parameter: ParameterId,
   pondType: string | null | undefined,
@@ -144,6 +207,12 @@ export function decideAlertStep(
         : heldSeverityFor(parameter, pondType, earlier);
     const worsened = SEVERITY_RANK[severity] > (previous ? SEVERITY_RANK[previous] : 0);
     const escalated = SEVERITY_RANK[severity] > SEVERITY_RANK[open.severity];
+    if (tracksSide(parameter, pondType)) {
+      const side = uniformSide(parameter, pondType, [latest, ...earlier]);
+      if (side && uniformSide(parameter, pondType, earlier) !== side) {
+        return { kind: "abnormal", severity, escalated, worsened, sideEntered: side };
+      }
+    }
     return { kind: "abnormal", severity, escalated, worsened };
   }
 
@@ -166,6 +235,20 @@ export function decideAlertStep(
 // throttled by ALERT_RENOTIFY_MS since the episode's last notification.
 export function renotifyDue(lastNotifiedAt: Date | null, recordedAt: Date): boolean {
   return !lastNotifiedAt || recordedAt.getTime() - lastNotifiedAt.getTime() >= ALERT_RENOTIFY_MS;
+}
+
+// Whether a held run that entered `side` (AlertStep "abnormal".sideEntered) is on the other side from the episode's
+// last notification, and so notifies without the ALERT_RENOTIFY_MS throttle. No last notification (or one without a
+// value, or an in-range one) says nothing about a side, so it is not news on that ground.
+export function sideChangeIsNews(
+  parameter: ParameterId,
+  pondType: string | null | undefined,
+  lastNotifiedValue: number | null | undefined,
+  side: AlertSide,
+): boolean {
+  if (lastNotifiedValue === null || lastNotifiedValue === undefined) return false;
+  const lastSide = sideOf(parameter, lastNotifiedValue, pondType);
+  return lastSide !== null && lastSide !== side;
 }
 
 // ALERT_ESCALATED is reserved for the episode's one step past its worst severity so far; a repeat of a severity

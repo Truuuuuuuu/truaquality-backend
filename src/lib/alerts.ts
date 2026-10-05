@@ -1,4 +1,4 @@
-import { decideAlertStep, notificationKindFor, renotifyDue } from "./alertRules.ts";
+import { decideAlertStep, notificationKindFor, renotifyDue, sideChangeIsNews } from "./alertRules.ts";
 import { notifyActiveUsers } from "./notify.ts";
 import { ALERT_HOLD_READINGS, type ParameterId } from "./parameters.ts";
 import { prisma } from "./prisma.ts";
@@ -65,9 +65,12 @@ async function evaluateParameter(pondId: string, parameter: ParameterId, pondTyp
         if (!open) throw new Error(`[alerts] "abnormal" step for ${pondId}/${parameter} without an open episode`);
         const episode = open;
         // An escalation always notifies. A worsened reading that isn't one is throttled against the episode's
-        // last notification — looked up only here, so every other path skips the query.
+        // last notification — looked up only here, so every other path skips the query. A two-sided parameter's
+        // run that entered one side (sideEntered, pH only) is checked against the side of that same notification
+        // and, if it changed, notifies unthrottled (alertRules.ts, "Two-sided parameters").
         let notify = step.escalated;
-        if (step.worsened && !step.escalated) {
+        const sideEntered = step.sideEntered;
+        if (!step.escalated && (step.worsened || sideEntered)) {
           // Notification.recordedAt is DateTime? (it is null for DEVICE_* rows) and no constraint ties
           // "has an alertId" to "has a recordedAt", so the filter says so instead of a `!` asserting it.
           // It also removes a trap: Postgres orders DESC NULLS FIRST, so a null-recordedAt row for this
@@ -78,12 +81,16 @@ async function evaluateParameter(pondId: string, parameter: ParameterId, pondTyp
           // transaction, so the episode's lastValue/lastRecordedAt/nominalSince were never written either
           // and ingest.ts swallowed it into a console.error — strictly worse than notifying. Unreachable
           // today; this makes the choice explicit rather than accidental.
-          const last = await tx.notification.findFirst({
+          //
+          // `value` is selected only when a side was entered, so every other lookup is the statement it was.
+          const last: { recordedAt: Date | null; value?: number | null } | null = await tx.notification.findFirst({
             where: { alertId: episode.id, recordedAt: { not: null } },
             orderBy: { recordedAt: "desc" },
-            select: { recordedAt: true },
+            select: sideEntered ? { recordedAt: true, value: true } : { recordedAt: true },
           });
-          notify = renotifyDue(last?.recordedAt ?? null, recordedAt);
+          notify =
+            (sideEntered !== undefined && sideChangeIsNews(parameter, pondType, last?.value, sideEntered)) ||
+            (step.worsened && renotifyDue(last?.recordedAt ?? null, recordedAt));
         }
 
         await tx.alert.update({

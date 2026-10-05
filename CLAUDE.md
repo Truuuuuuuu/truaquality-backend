@@ -435,6 +435,13 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
     the episode had already escalated, so nothing fired. A repeat is throttled by `ALERT_RENOTIFY_MS` (30 min since
     that alert's last notification) and carries `ALERT_OPENED`; only the one true escalation past the episode's
     worst severity is `ALERT_ESCALATED`, and it is never throttled.
+  - **A side change is news too (pH, 09-REVIEW WR-02).** pH shares one episode for both sides, so an acidic episode
+    that hasn't resolved also receives a later alkaline run. On the reading that completes a held window lying
+    entirely on one side (when the window before it didn't), `decideAlertStep` returns `sideEntered`; the shell reads
+    the episode's last notification's `value` (selected only then, in the throttle lookup it already makes) and, if
+    that was the other side, notifies `ALERT_OPENED` unthrottled. A held run mixing both sides is still held and
+    still alerts (direction from the latest value). Only two-sided held parameters get this (`tracksSide`): turbidity
+    can't go low and temperature (hold 1) can't cross its band within one episode, so both are unchanged.
   - It always evaluates the pond's **newest stored** reading, never the incoming batch, and skips anything not
     newer than `Alert.lastRecordedAt` — so duplicates and late backlog uploads can't reopen or resolve out of
     order.

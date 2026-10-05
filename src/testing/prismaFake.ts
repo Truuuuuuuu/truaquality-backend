@@ -239,7 +239,7 @@ export function createPrismaFake(opts: PrismaFakeOptions = {}) {
       },
     },
     notification: {
-      findFirst: async (args: { where: Where }) => {
+      findFirst: async (args: { where: Where; select?: { value?: boolean } }) => {
         record("tx.notification.findFirst", args);
         let rows = notifications.filter((n) => n.alertId === args.where.alertId);
         // Honour `recordedAt: { not: null }`. Without it the fake would silently widen the query and
@@ -249,7 +249,11 @@ export function createPrismaFake(opts: PrismaFakeOptions = {}) {
           rows = rows.filter((n) => n.recordedAt != null);
         }
         const newest = newestBy(rows, (n) => n.recordedAt);
-        return newest ? { recordedAt: newest.recordedAt ?? null } : null;
+        if (!newest) return null;
+        // `value` only when selected (the pH side-change check, 09-REVIEW WR-02), like the real query.
+        return args.select?.value
+          ? { recordedAt: newest.recordedAt ?? null, value: newest.value ?? null }
+          : { recordedAt: newest.recordedAt ?? null };
       },
       createMany: async (args: { data: FakeNotification[] }) => {
         record("tx.notification.createMany", args);

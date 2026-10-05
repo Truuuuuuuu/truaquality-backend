@@ -8,6 +8,7 @@ import {
   heldSeverityFor,
   notificationKindFor,
   renotifyDue,
+  sideChangeIsNews,
   type HeldReading,
   type OpenEpisode,
 } from "./alertRules.ts";
@@ -550,6 +551,76 @@ describe("pH — two-sided alerts (Phase 9)", () => {
     const outside = run(NEUTRAL, HOLD + 1);
     outside[HOLD] = ACID;
     assert.deepEqual(decide(open, series(outside)), { kind: "nominal", nominalSince: since, resolved: true });
+  });
+
+  test("WR-02: a held alkaline run inside an unresolved acidic episode enters the high side", () => {
+    const open = episode({ severity: "WARNING", lastValue: ALKALI, lastRecordedAt: at(10 * MIN_MS - STEP), nominalSince: at(0) });
+    assert.deepEqual(decide(open, series([...run(ALKALI, HOLD), NEUTRAL])), {
+      kind: "abnormal",
+      severity: "WARNING",
+      escalated: false,
+      worsened: true,
+      sideEntered: "high",
+    });
+  });
+
+  test("WR-02: a direct acidic-to-alkaline flip enters the high side once the window is all alkaline, not before", () => {
+    const open = episode({ severity: "WARNING", lastValue: ACID, lastRecordedAt: at(10 * MIN_MS - STEP), nominalSince: null });
+    // Mixed windows on the way across are still held and still abnormal, but carry no side.
+    for (let k = 1; k < HOLD; k++) {
+      assert.deepEqual(decide(open, series([...run(ALKALI, k), ...run(ACID, HOLD)])), {
+        kind: "abnormal",
+        severity: "WARNING",
+        escalated: false,
+        worsened: false,
+      });
+    }
+    assert.deepEqual(decide(open, series([...run(ALKALI, HOLD), ACID])), {
+      kind: "abnormal",
+      severity: "WARNING",
+      escalated: false,
+      worsened: false,
+      sideEntered: "high",
+    });
+    // The next alkaline reading continues an all-alkaline window: nothing new.
+    assert.deepEqual(decide(open, series(run(ALKALI, HOLD + 1))), {
+      kind: "abnormal",
+      severity: "WARNING",
+      escalated: false,
+      worsened: false,
+    });
+  });
+
+  test("WR-02: a held run mixing acidic and alkaline readings is still held (opens, and stays abnormal)", () => {
+    const mixed = [ACID, ALKALI, ACID, ALKALI, ACID, ALKALI].slice(0, HOLD);
+    assert.deepEqual(decide(null, series(mixed)), { kind: "open", severity: "WARNING" });
+    const open = episode({ severity: "WARNING", lastValue: ALKALI, lastRecordedAt: at(10 * MIN_MS - STEP), nominalSince: null });
+    assert.equal(decide(open, series([...mixed, ALKALI])).kind, "abnormal");
+    assert.equal("sideEntered" in decide(open, series([...mixed, ALKALI])), false);
+  });
+
+  test("WR-02: turbidity and temperature never carry sideEntered", () => {
+    const tb = thresholdsFor(null).turbidity;
+    const W = tb.safeMax + 1;
+    const open = episode({ severity: "WARNING", lastValue: 0, lastRecordedAt: at(10 * MIN_MS - STEP), nominalSince: at(0) });
+    assert.equal("sideEntered" in decide(open, series([...run(W, ALERT_HOLD_READINGS.turbidity), 0]), "turbidity"), false);
+    const cold = episode({ severity: "WARNING", lastValue: 31, lastRecordedAt: at(10 * MIN_MS - STEP) });
+    assert.deepEqual(decide(cold, series([18]), "temperature"), {
+      kind: "abnormal",
+      severity: "WARNING",
+      escalated: false,
+      worsened: false,
+    });
+  });
+
+  test("WR-02: sideChangeIsNews compares the entered side with the last notified value", () => {
+    assert.equal(sideChangeIsNews("ph", null, ACID, "high"), true);
+    assert.equal(sideChangeIsNews("ph", null, ALKALI, "low"), true);
+    assert.equal(sideChangeIsNews("ph", null, ACID, "low"), false);
+    assert.equal(sideChangeIsNews("ph", null, ALKALI, "high"), false);
+    assert.equal(sideChangeIsNews("ph", null, NEUTRAL, "high"), false);
+    assert.equal(sideChangeIsNews("ph", null, null, "high"), false);
+    assert.equal(sideChangeIsNews("ph", null, undefined, "low"), false);
   });
 
   test("WR-01: HOLD in-range readings in a row after recovery time resolve", () => {

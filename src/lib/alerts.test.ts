@@ -777,6 +777,79 @@ test("WR-01 end-to-end pH: a stray inside the last hold window at the end of rec
   assert.equal(fake.notifications[1].value, PH_NEUTRAL);
 });
 
+// ---------------------------------------------------------------------------------------------------------
+// WR-02 — pH is two-sided: a side change inside one episode is news, not throttled by ALERT_RENOTIFY_MS
+// ---------------------------------------------------------------------------------------------------------
+
+function seedPhNotification(fake: Fake, value: number, recordedAt: Date) {
+  fake.notifications.push({ profileId: "p1", alertId: "alert-open", kind: "ALERT_OPENED", severity: "WARNING", value, recordedAt });
+}
+
+function seedPhAlkalineRunAfterRecovery(fake: Fake) {
+  seedAlert(fake, {
+    parameter: "ph",
+    severity: "WARNING",
+    openedAt: minute(-10),
+    lastValue: PH_ALKALI,
+    lastRecordedAt: at(-30_000),
+    nominalSince: minute(-5),
+  });
+  for (let i = 9; i >= PH_HOLD; i--) seedReading(fake, PH_NEUTRAL, at(-i * 30_000), "ph");
+  for (let i = PH_HOLD - 1; i >= 0; i--) seedReading(fake, PH_ALKALI, at(-i * 30_000), "ph");
+}
+
+test("WR-02 pH: an alkaline held run inside an unresolved acidic episode notifies at once, unthrottled", async (t) => {
+  const fake = setup(t);
+  seedPhAlkalineRunAfterRecovery(fake);
+  // The acidic opening notification is well within ALERT_RENOTIFY_MS.
+  seedPhNotification(fake, PH_ACID, minute(-10));
+
+  await evaluate(["ph"]);
+
+  assert.deepEqual(argsOf(fake, "tx.notification.findFirst")[0], {
+    where: { alertId: "alert-open", recordedAt: { not: null } },
+    orderBy: { recordedAt: "desc" },
+    select: { recordedAt: true, value: true },
+  });
+  assert.equal(fake.alerts[0].nominalSince, null);
+  assert.equal(fake.alerts[0].resolvedAt, null);
+  assert.deepEqual(fake.notifications.at(-1), {
+    profileId: "p1",
+    alertId: "alert-open",
+    kind: "ALERT_OPENED",
+    severity: "WARNING",
+    value: PH_ALKALI,
+    recordedAt: minute(0),
+  });
+});
+
+test("WR-02 pH: a held run on the side already notified is still throttled", async (t) => {
+  const fake = setup(t);
+  seedPhAlkalineRunAfterRecovery(fake);
+  seedPhNotification(fake, PH_ALKALI, minute(-10));
+
+  await evaluate(["ph"]);
+
+  assert.deepEqual(fake.ops(), [...PREFIX.slice(0, 4), "tx.reading.findMany", ...PREFIX.slice(4), "tx.notification.findFirst", "tx.alert.update"]);
+  assert.equal(fake.notifications.length, 1);
+});
+
+test("WR-02 end-to-end pH: a direct acidic-to-alkaline swing notifies once the run is all alkaline", async (t) => {
+  const fake = setup(t);
+
+  await ingestPh([...Array.from({ length: 2 * PH_HOLD }, (_, k) => (k < PH_HOLD ? PH_ACID : PH_ALKALI))], MIN);
+
+  assert.equal(fake.alerts.length, 1);
+  assert.equal(fake.alerts[0].resolvedAt, null);
+  assert.deepEqual(
+    fake.notifications.map((n) => [n.kind, n.value, n.recordedAt]),
+    [
+      ["ALERT_OPENED", PH_ACID, minute(PH_HOLD - 1)],
+      ["ALERT_OPENED", PH_ALKALI, minute(2 * PH_HOLD - 1)],
+    ],
+  );
+});
+
 test("ALRT-05 turbidity: a lone CRITICAL stray during recovery is ignored; the WARNING episode resolves on time", async (t) => {
   const fake = setup(t);
   const hold = ALERT_HOLD_READINGS.turbidity;
