@@ -8,6 +8,7 @@ import { adminRouter } from "./routes/admin.ts";
 import { authRouter } from "./routes/auth.ts";
 import { meRouter } from "./routes/me.ts";
 import { startDeviceWatchdog } from "./lib/deviceWatchdog.ts";
+import { startNotificationRetention } from "./lib/notificationRetention.ts";
 import { startReadingRollup } from "./lib/readingRollup.ts";
 import { startReadingsSubscriber } from "./lib/readingsSubscriber.ts";
 import { devicesRouter } from "./routes/devices.ts";
@@ -100,9 +101,13 @@ app.use(errorHandler);
 let mqttClient: ReturnType<typeof startReadingsSubscriber> | null = null;
 let rollupTimer: ReturnType<typeof startReadingRollup> | null = null;
 let watchdogTimer: ReturnType<typeof startDeviceWatchdog> | null = null;
+let notificationRetentionTimer: ReturnType<typeof startNotificationRetention> | null = null;
 
 const server = app.listen(port, () => {
   console.log(`Server listening on port ${port}`);
+
+  // Retention is independent of sensor processing: remove expired notifications on startup and hourly.
+  notificationRetentionTimer = startNotificationRetention();
 
   // Devices don't call the HTTP API: they publish signed readings to the MQTT broker, and this picks them up.
   // Set MQTT_ENABLED=false to skip this (e.g. doing UI-only work) without touching device/pond code.
@@ -161,6 +166,7 @@ async function shutdown(signal: NodeJS.Signals) {
 
   if (rollupTimer) clearInterval(rollupTimer);
   if (watchdogTimer) clearInterval(watchdogTimer);
+  if (notificationRetentionTimer) clearInterval(notificationRetentionTimer);
 
   await new Promise<void>((resolve) => server.close(() => resolve()));
   // `false` means "send DISCONNECT properly" rather than yanking the socket.
