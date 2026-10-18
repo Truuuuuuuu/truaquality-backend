@@ -46,8 +46,9 @@ Current surface area:
   OFFLINE/ONLINE `DeviceEvent`s; `events` is the latest 50.
 - `/notifications` (protected, caller's own only): list (keyset-paginated, includes `unreadCount`),
   `POST /notifications/:id/read`, `POST /notifications/read-all`
-- `/admin/*` (admin only): user invites, resend invite, user enable/disable; `/admin/ponds` (create, rename,
-  archive); `/admin/devices` (register, assign to pond, disable, rotate secret); `/admin/audit`
+- `/ponds` and `/devices` (all active users): create/update/archive/restore ponds; register/update/assign/
+  enable/disable devices and rotate their secrets. Mutations require the same active account as reads.
+- `/admin/*` (admin only): user invites, resend invite, user enable/disable; `/admin/audit`
   (keyset-paginated read of `AuditLog`, filterable by `action`/`targetType`/`actorId`/date range)
 - **MQTT, not HTTP, for device data:** on startup the backend subscribes to
   `truaquality/v1/devices/+/readings` on HiveMQ Cloud (`src/lib/readingsSubscriber.ts`). ESP32 units publish
@@ -170,8 +171,8 @@ resolution of `tsc`/`tsx`/`ts-node`:
   placeholders (the email becomes `deleted-<id>@deleted.invalid`, freeing the real one for a re-invite).
   Admin accounts can't be deleted. `requireAuth` rejects `DELETED` like `DISABLED`, `GET /admin/users` hides
   them, and the admin status route treats them as not found.
-- `AuditLog` records admin actions such as `user.invite`, `user.disable`, and `user.promote_admin`, plus
-  `user.delete_self` (the one non-admin action; its metadata keeps the original email). Write it
+- `AuditLog` records account and registry actions such as `user.invite`, `user.disable`, `pond.create`, and
+  `device.register`, plus `user.delete_self` (its metadata keeps the original email). Write it
   through `logAudit()` in `src/lib/audit.ts`, inside the same `$transaction` as the change it records. Older
   rows may still carry pre-refactor actions (`office.*`, `user.promote_super_admin`); they're history, leave
   them.
@@ -260,7 +261,7 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
   A pond can't be archived while a device is assigned to it.
 - `Device`: one ESP32 sensor unit, at most one per pond (`pondId` is `@unique`, nullable).
   - **The device never knows its pond.** Firmware only holds its device id and secret. Ingest resolves the
-    pond from `Device.pondId`, so moving hardware between ponds is an admin reassignment, not a reflash.
+    pond from `Device.pondId`, so moving hardware between ponds is a registry reassignment, not a reflash.
 - **Device authentication is per message, not per broker login.**
   - HiveMQ Cloud's free (Serverless) tier gives every MQTT credential access to all topics, and its credentials
     can only be created by hand in the console. So all units share one broker credential, and the broker
@@ -290,7 +291,7 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
     `device-secret:<id>:<secretVersion>`).
     - Rotating a device bumps `secretVersion`.
     - Changing the master key invalidates every unit at once, so every unit must be reflashed.
-    - The API returns credentials only from `POST /admin/devices` and `POST /admin/devices/:id/rotate-secret`.
+    - The API returns credentials only from `POST /devices` and `POST /devices/:id/rotate-secret`.
   - Order in `readingsSubscriber.ts`: parse the topic and the `v1.` envelope synchronously, then **enqueue** the
     rest on a bounded keyed queue (`src/lib/messageQueue.ts`: 4 workers, 5000 waiting, one job per device at a time,
     in arrival order). The queued job looks up the device, **verifies the signature**, checks it isn't disabled,
@@ -386,9 +387,9 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
   - Ingest logic lives in `src/lib/ingest.ts`, separate from the MQTT transport.
     - Values that are out of bounds or unknown, recorded before the device's current `assignedAt`, or older
       than 7 days are dropped one at a time (and logged); the rest of the batch is still stored.
-    - An unassigned device's readings are dropped, but its `lastSeenAt` is still updated so admins can see it's
+    - An unassigned device's readings are dropped, but its `lastSeenAt` is still updated so users can see it's
       online.
-    - Ingest writes no `AuditLog` rows (it's once a minute per device); admin pond/device changes do.
+    - Ingest writes no `AuditLog` rows (it's once a minute per device); pond/device registry changes do.
   - The subscriber speaks MQTT 3.1.1 (like the units) with a persistent session (`clean: false`), so the broker
     can hold QoS 1 readings while the backend restarts. `MQTT_CLIENT_ID` must be unique per running backend process.
 - **Thresholds depend on the pond's type, and the backend owns them.** `PARAMETER_THRESHOLDS` in
@@ -475,8 +476,9 @@ the whole `adminRouter` via `adminRouter.use(requireAuth, requireAdmin)`.
   (`::int[]`), so it walks the `(pondId, parameter, recordedAt DESC)` index; `latest` is the newest of each group
   and `heldSeverity` is judged from the whole group. Don't replace it with
   Prisma's `distinct`, which de-duplicates in memory, or `DISTINCT ON`, which reads every row for the pond.
-- `adminPondsRouter` / `adminDevicesRouter` are mounted **inside** `adminRouter`, which already applies
-  `requireAuth` + `requireAdmin`. Mounting them separately under `/admin` would run auth twice.
+- `pondRegistryRouter` / `deviceRegistryRouter` are mounted inside `pondsRouter` / `devicesRouter`
+  after `requireAuth`. All active accounts may mutate registries; only user administration and audit
+  viewing stay behind `adminRouter.use(requireAuth, requireAdmin)`.
 - `startReadingsSubscriber()` is called **inside** `app.listen()`'s success callback, not right after it
   unconditionally, and `server.on("error", ...)` exits the process on a failed bind (e.g. port already
   taken). Earlier this wasn't the case: a failed HTTP bind still let the MQTT subscriber start, so a second
@@ -539,7 +541,6 @@ production.
 
 ## Known follow-ups (not yet built)
 
-- Finer-grained roles for pond/device management (today: any signed-in user reads, only `ADMIN` writes).
 - No CI yet; `npm test` must be run locally.
 - `readingsSubscriber.handleReadingsMessage` (signature-before-lastSeenAt ordering, rate limit) is not yet
   unit-tested; it needs extracting from the module that reads `MQTT_*` at import. Its parts are: the queue
