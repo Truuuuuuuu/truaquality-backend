@@ -4,7 +4,7 @@ export const deviceIdParams = z.object({ id: z.uuid() });
 
 export const createDeviceSchema = z.object({
   serial: z.string().trim().min(1).max(64),
-  hardwareModel: z.string().trim().max(80).optional(),
+  hardwareModel: z.string().trim().max(80).default("ESP32D"),
   label: z.string().trim().max(80).optional(),
   pondId: z.uuid().optional(),
 });
