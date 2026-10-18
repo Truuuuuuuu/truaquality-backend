@@ -1,3 +1,4 @@
+import { deviceRegistryRouter } from "./deviceRegistry.ts";
 import { Router } from "express";
 import type { z } from "zod";
 import { uptimePercent } from "../lib/deviceDiagnosticsRules.ts";
@@ -12,6 +13,7 @@ import { deviceIdParams } from "../schemas/devices.ts";
 export const devicesRouter = Router();
 
 devicesRouter.use(requireAuth);
+devicesRouter.use(deviceRegistryRouter);
 
 devicesRouter.get("/", async (_req, res) => {
   const devices = await prisma.device.findMany({

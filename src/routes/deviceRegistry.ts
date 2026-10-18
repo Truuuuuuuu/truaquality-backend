@@ -8,8 +8,8 @@ import { rotateSecretRateLimit } from "../middleware/loginRateLimit.ts";
 import { validate } from "../middleware/validate.ts";
 import { createDeviceSchema, deviceIdParams, updateDeviceSchema } from "../schemas/devices.ts";
 
-// Mounted inside adminRouter, which already applies requireAuth + requireAdmin.
-export const adminDevicesRouter = Router();
+// Mounted inside devicesRouter, which already applies requireAuth for every active account.
+export const deviceRegistryRouter = Router();
 
 const deviceWithPondSelect = { ...deviceSummarySelect, pond: { select: { id: true, name: true } } };
 
@@ -22,7 +22,7 @@ async function checkPondAssignable(pondId: string, deviceId?: string) {
   return null;
 }
 
-adminDevicesRouter.post("/", validate(createDeviceSchema), async (req, res) => {
+deviceRegistryRouter.post("/", validate(createDeviceSchema), async (req, res) => {
   const { serial, hardwareModel, label, pondId } = req.body as z.infer<typeof createDeviceSchema>;
   const actorId = req.profile!.id;
 
@@ -51,7 +51,7 @@ adminDevicesRouter.post("/", validate(createDeviceSchema), async (req, res) => {
   res.status(201).json({ device, credentials: deviceCredentials(device) });
 });
 
-adminDevicesRouter.patch(
+deviceRegistryRouter.patch(
   "/:id",
   validate(deviceIdParams, "params"),
   validate(updateDeviceSchema),
@@ -102,7 +102,7 @@ adminDevicesRouter.patch(
   },
 );
 
-adminDevicesRouter.post("/:id/rotate-secret", rotateSecretRateLimit, validate(deviceIdParams, "params"), async (req, res) => {
+deviceRegistryRouter.post("/:id/rotate-secret", rotateSecretRateLimit, validate(deviceIdParams, "params"), async (req, res) => {
   const { id } = req.params as z.infer<typeof deviceIdParams>;
   const actorId = req.profile!.id;
 

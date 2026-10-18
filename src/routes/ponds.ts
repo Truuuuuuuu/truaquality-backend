@@ -1,3 +1,4 @@
+import { pondRegistryRouter } from "./pondRegistry.ts";
 import { Router } from "express";
 import type { z } from "zod";
 import { Prisma, type AlertSeverity } from "../generated/prisma/client.ts";
@@ -18,6 +19,7 @@ import { pondIdParams, readingsExportQuery, readingsPageQuery, seriesQuery } fro
 export const pondsRouter = Router();
 
 pondsRouter.use(requireAuth);
+pondsRouter.use(pondRegistryRouter);
 
 type LatestReading = { value: number; recordedAt: Date };
 type RecentRow = LatestReading & { pondId: string; parameter: string };

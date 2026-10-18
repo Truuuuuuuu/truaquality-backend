@@ -5,10 +5,10 @@ import { prisma } from "../lib/prisma.ts";
 import { validate } from "../middleware/validate.ts";
 import { createPondSchema, pondIdParams, updatePondSchema } from "../schemas/ponds.ts";
 
-// Mounted inside adminRouter, which already applies requireAuth + requireAdmin.
-export const adminPondsRouter = Router();
+// Mounted inside pondsRouter, which already applies requireAuth for every active account.
+export const pondRegistryRouter = Router();
 
-adminPondsRouter.post("/", validate(createPondSchema), async (req, res) => {
+pondRegistryRouter.post("/", validate(createPondSchema), async (req, res) => {
   const { name, notes, fishSpecies, pondType } = req.body as z.infer<typeof createPondSchema>;
   const actorId = req.profile!.id;
 
@@ -29,7 +29,7 @@ adminPondsRouter.post("/", validate(createPondSchema), async (req, res) => {
   res.status(201).json({ pond });
 });
 
-adminPondsRouter.patch(
+pondRegistryRouter.patch(
   "/:id",
   validate(pondIdParams, "params"),
   validate(updatePondSchema),
