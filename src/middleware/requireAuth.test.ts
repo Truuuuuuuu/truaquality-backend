@@ -69,8 +69,9 @@ test("empty Bearer token -> 401 missing bearer token", async (t) => {
   assert.equal(findUnique.mock.callCount(), 0);
 });
 
-test("valid token for an ACTIVE profile -> next() with user, profile, token attached", async (t) => {
-  const { fetchMock, findUnique, update } = setup(t, profile("ACTIVE"));
+for (const systemRole of ["USER", "ADMIN"] as const) {
+test(`valid token for an ACTIVE ${systemRole} -> next() with user, profile, token attached`, async (t) => {
+  const { fetchMock, findUnique, update } = setup(t, profile("ACTIVE", systemRole));
   const token = validToken();
   const r = await run(requireAuth, fakeReq({ Authorization: `Bearer ${token}` }));
   assert.equal(r.nextCalls, 1);
@@ -81,12 +82,14 @@ test("valid token for an ACTIVE profile -> next() with user, profile, token atta
   assert.equal(r.body, undefined);
   assert.equal(r.req.user?.sub, "u1");
   assert.equal(r.req.profile?.id, "u1");
+  assert.equal(r.req.profile?.systemRole, systemRole);
   assert.equal(r.req.token, token);
   assert.equal(findUnique.mock.callCount(), 1);
   assert.deepEqual(findUnique.mock.calls[0]!.arguments[0], { where: { id: "u1" } });
   assert.equal(update.mock.callCount(), 0);
   assertOnlyLocalFetches(fetchMock);
 });
+}
 
 test("valid token for an INVITED profile -> promoted to ACTIVE exactly once and allowed", async (t) => {
   const { fetchMock, update } = setup(t, profile("INVITED"));
