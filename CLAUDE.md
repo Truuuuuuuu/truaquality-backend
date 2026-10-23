@@ -161,7 +161,7 @@ resolution of `tsc`/`tsx`/`ts-node`:
 
 - `Profile`: one row per provisioned user.
   - `id` equals Supabase's `auth.users.id`. There are no password fields; Supabase Auth keeps credentials.
-  - `systemRole`: `ADMIN` | `USER`.
+  - `systemRole`: `ADMIN` | `STAFF` (default: `STAFF`).
   - `status`: `INVITED` (invite sent, not accepted) → `ACTIVE` (first authenticated request) → `DISABLED`,
     or `DELETED`.
 - **Account deletion is self-service and anonymizes, it doesn't remove the row.** `DELETE /me`
