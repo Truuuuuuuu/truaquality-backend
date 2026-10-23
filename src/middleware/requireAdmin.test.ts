@@ -11,7 +11,7 @@ import { fakeReq, run } from "../testing/http.ts";
 
 const DENIED = "admin access required";
 
-function withProfile(systemRole: "USER" | "ADMIN"): Request {
+function withProfile(systemRole: "STAFF" | "ADMIN"): Request {
   const req = fakeReq();
   req.profile = { id: "u1", systemRole, status: "ACTIVE" } as unknown as Request["profile"];
   return req;
@@ -24,8 +24,8 @@ test("no profile on the request -> 403 admin access required", async () => {
   assert.equal(r.nextCalls, 0);
 });
 
-test("USER profile -> 403 admin access required", async () => {
-  const r = await run(requireAdmin, withProfile("USER"));
+test("STAFF profile -> 403 admin access required", async () => {
+  const r = await run(requireAdmin, withProfile("STAFF"));
   assert.equal(r.statusCode, 403);
   assert.equal(r.body?.error, DENIED);
   assert.equal(r.nextCalls, 0);
@@ -40,9 +40,9 @@ test("ADMIN profile -> next()", async () => {
   assert.equal(r.body, undefined);
 });
 
-test("chained: valid token for an ACTIVE USER passes requireAuth, then requireAdmin denies", async (t) => {
+test("chained: valid token for an ACTIVE STAFF passes requireAuth, then requireAdmin denies", async (t) => {
   stubJwksFetch(t);
-  const user = { id: "u1", email: "u1@example.test", fullName: "Test User", systemRole: "USER", status: "ACTIVE" };
+  const user = { id: "u1", email: "u1@example.test", fullName: "Test User", systemRole: "STAFF", status: "ACTIVE" };
   const findUnique = t.mock.fn(async () => user);
   const update = t.mock.fn(async () => user);
   t.mock.property(prisma, "profile", { findUnique, update } as never);
@@ -51,7 +51,7 @@ test("chained: valid token for an ACTIVE USER passes requireAuth, then requireAd
   const req = fakeReq({ Authorization: `Bearer ${token}` });
 
   const auth = await run(requireAuth, req);
-  assert.equal(auth.nextCalls, 1, "a valid USER token must pass requireAuth");
+  assert.equal(auth.nextCalls, 1, "a valid STAFF token must pass requireAuth");
   assert.equal(auth.nextError, undefined, "requireAuth must not forward an error here");
 
   const admin = await run(requireAdmin, req);

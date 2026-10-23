@@ -15,7 +15,7 @@ const INVALID = "invalid or expired token";
 const MISSING = "missing bearer token";
 const SUPABASE_ORIGIN = new URL(process.env.SUPABASE_URL!).origin;
 
-function profile(status: Status, systemRole: "USER" | "ADMIN" = "USER") {
+function profile(status: Status, systemRole: "STAFF" | "ADMIN" = "STAFF") {
   return { id: "u1", email: "u1@example.test", fullName: "Test User", systemRole, status };
 }
 
@@ -69,7 +69,7 @@ test("empty Bearer token -> 401 missing bearer token", async (t) => {
   assert.equal(findUnique.mock.callCount(), 0);
 });
 
-for (const systemRole of ["USER", "ADMIN"] as const) {
+for (const systemRole of ["STAFF", "ADMIN"] as const) {
 test(`valid token for an ACTIVE ${systemRole} -> next() with user, profile, token attached`, async (t) => {
   const { fetchMock, findUnique, update } = setup(t, profile("ACTIVE", systemRole));
   const token = validToken();

@@ -14,7 +14,7 @@ datasource db {
 
 enum SystemRole {
   ADMIN
-  USER
+  STAFF
 }
 
 enum ProfileStatus {
@@ -29,7 +29,7 @@ model Profile {
   id            String         @id @db.Uuid
   email         String         @unique
   fullName      String
-  systemRole    SystemRole     @default(USER)
+  systemRole    SystemRole     @default(STAFF)
   status        ProfileStatus  @default(INVITED)
   invitedById   String?        @db.Uuid
   invitedBy     Profile?       @relation("ProfileInvites", fields: [invitedById], references: [id], onDelete: SetNull)
