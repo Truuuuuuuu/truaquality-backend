@@ -1,6 +1,5 @@
 import { Router } from "express";
-import { logAudit } from "../lib/audit.ts";
-import { prisma } from "../lib/prisma.ts";
+import { AccountPolicyError, deleteStaffAccount } from "../lib/userRoles.ts";
 import { verifyPassword } from "../lib/supabase.ts";
 import { supabaseAdmin } from "../lib/supabaseAdmin.ts";
 import { loginRateLimit } from "../middleware/loginRateLimit.ts";
@@ -31,32 +30,15 @@ meRouter.delete("/", loginRateLimit, validate(deleteAccountSchema), async (req, 
     return res.status(400).json({ error: "incorrect password" });
   }
 
-  // Supabase first: if this fails nothing has changed yet, so the user can simply retry.
-  const { error } = await supabaseAdmin.auth.admin.deleteUser(id);
-  if (error) {
-    return res.status(error.status ?? 502).json({ error: error.message });
-  }
-
-  await prisma.$transaction(async (tx) => {
-    await tx.notification.deleteMany({ where: { profileId: id } });
-    await tx.profile.update({
-      where: { id },
-      data: {
-        status: "DELETED",
-        deletedAt: new Date(),
-        fullName: "Deleted user",
-        // Must stay unique; freeing the real address lets an admin re-invite this person later.
-        email: `deleted-${id}@deleted.invalid`,
-      },
+  try {
+    await deleteStaffAccount(id, async () => {
+      const { error } = await supabaseAdmin.auth.admin.deleteUser(id);
+      if (error) throw new AccountPolicyError(error.status ?? 502, error.message);
     });
-    // The real address is deliberately kept in the audit metadata even though the profile above is scrubbed: the
-    // audit trail of a government system has to say who removed their own account, and once the profile row is
-    // anonymised this entry is the only record of it. (Reviewed in the security audit, finding S7.)
-    await logAudit(
-      { actorId: id, action: "user.delete_self", targetType: "profile", targetId: id, metadata: { email } },
-      tx,
-    );
-  });
+  } catch (err) {
+    if (err instanceof AccountPolicyError) return res.status(err.status).json({ error: err.message });
+    throw err;
+  }
 
   res.status(204).end();
 });

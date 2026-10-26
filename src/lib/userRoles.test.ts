@@ -136,3 +136,40 @@ test("self-delete racing promotion cannot promote a deleted login", async (t) =>
   assert.equal(deleted, true);
   assert.equal(db.rows.get("target")?.status, "DELETED");
 });
+
+test("failed auth deletion leaves profile and audit untouched", async (t) => {
+  const db = install(t, [row("target")]);
+  await assert.rejects(deleteStaffAccount("target", async () => { throw new Error("upstream failed"); }), /upstream failed/);
+  assert.equal(db.rows.get("target")?.status, "ACTIVE");
+  assert.equal(db.audit.length, 0);
+});
+
+test("status changes retain own-account, admin and deleted-account protections", async (t) => {
+  const db = install(t, [row("actor", "ADMIN"), row("admin", "ADMIN"), row("deleted", "STAFF", "DELETED")]);
+  await assert.rejects(changeUserStatus("actor", "actor", "DISABLED"), { status: 400 });
+  await assert.rejects(changeUserStatus("actor", "admin", "DISABLED"), { status: 400 });
+  await assert.rejects(changeUserStatus("actor", "deleted", "ACTIVE"), { status: 404 });
+  assert.equal(db.audit.length, 0);
+});
+
+test("ban finishes before re-enable and promotion can proceed", async (t) => {
+  const db = install(t, [row("actor", "ADMIN"), row("target")]);
+  const events: string[] = [];
+  let releaseBan!: () => void;
+  let banStarted!: () => void;
+  const started = new Promise<void>((resolve) => { banStarted = resolve; });
+  const pendingBan = new Promise<void>((resolve) => { releaseBan = resolve; });
+  const disable = changeUserStatus("actor", "target", "DISABLED", async () => {
+    banStarted();
+    await pendingBan;
+    events.push("ban");
+  });
+  await started;
+  const enable = changeUserStatus("actor", "target", "ACTIVE", async () => { events.push("unban"); });
+  const promote = changeUserRole("actor", "target", "ADMIN");
+  releaseBan();
+  await Promise.all([disable, enable, promote]);
+  assert.deepEqual(events, ["ban", "unban"]);
+  assert.equal(db.rows.get("target")?.systemRole, "ADMIN");
+  assert.equal(db.rows.get("target")?.status, "ACTIVE");
+});

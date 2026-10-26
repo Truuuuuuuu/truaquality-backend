@@ -4,12 +4,13 @@ import { Prisma } from "../generated/prisma/client.ts";
 import { logAudit } from "../lib/audit.ts";
 import { decodeAuditCursor, encodeAuditCursor } from "../lib/auditCursor.ts";
 import { prisma } from "../lib/prisma.ts";
+import { AccountPolicyError, changeUserRole, changeUserStatus } from "../lib/userRoles.ts";
 import { supabaseAdmin } from "../lib/supabaseAdmin.ts";
 import { inviteEmailRateLimit } from "../middleware/loginRateLimit.ts";
 import { requireAdmin } from "../middleware/requireAdmin.ts";
 import { requireAuth } from "../middleware/requireAuth.ts";
 import { validate } from "../middleware/validate.ts";
-import { auditPageQuery, inviteUserSchema, updateStatusSchema, userIdParams } from "../schemas/admin.ts";
+import { auditPageQuery, inviteUserSchema, updateRoleSchema, updateStatusSchema, userIdParams } from "../schemas/admin.ts";
 
 const inviteRedirectUrl = process.env.INVITE_REDIRECT_URL;
 if (!inviteRedirectUrl) {
@@ -153,6 +154,22 @@ adminRouter.get("/audit", validate(auditPageQuery, "query"), async (req, res) =>
 });
 
 adminRouter.patch(
+  "/users/:id/role",
+  validate(userIdParams, "params"),
+  validate(updateRoleSchema),
+  async (req, res) => {
+    const { id } = req.params as z.infer<typeof userIdParams>;
+    try {
+      const profile = await changeUserRole(req.profile!.id, id, req.body.systemRole);
+      res.json({ profile });
+    } catch (err) {
+      if (err instanceof AccountPolicyError) return res.status(err.status).json({ error: err.message });
+      throw err;
+    }
+  },
+);
+
+adminRouter.patch(
   "/users/:id/status",
   validate(userIdParams, "params"),
   validate(updateStatusSchema),
@@ -161,41 +178,22 @@ adminRouter.patch(
     const { status } = req.body;
     const actorId = req.profile!.id;
 
-    if (status === "DISABLED" && id === actorId) {
-      return res.status(400).json({ error: "you cannot disable your own account" });
+    let profile;
+    let authError: { status?: number; message: string } | null = null;
+    try {
+      profile = await changeUserStatus(actorId, id, status, async () => {
+        const { error } = await supabaseAdmin.auth.admin.updateUserById(id, {
+          ban_duration: status === "DISABLED" ? "876000h" : "none",
+        });
+        authError = error;
+      });
+    } catch (err) {
+      if (err instanceof AccountPolicyError) return res.status(err.status).json({ error: err.message });
+      throw err;
     }
 
-    const target = await prisma.profile.findUnique({ where: { id } });
-    // A deleted profile has no Supabase login left, so re-enabling it would revive an account nobody can use.
-    if (!target || target.status === "DELETED") {
-      return res.status(404).json({ error: "user not found" });
-    }
-    if (status === "DISABLED" && target.systemRole === "ADMIN") {
-      return res.status(400).json({ error: "admins cannot be disabled" });
-    }
-    if (status === "ACTIVE" && target.status !== "DISABLED") {
-      return res.status(409).json({ error: "only disabled users can be re-enabled" });
-    }
-
-    // DB first: requireAuth reads this, so the lockout is immediate even if the Supabase ban call fails.
-    const profile = await prisma.$transaction(async (tx) => {
-      const updated = await tx.profile.update({ where: { id }, data: { status } });
-      await logAudit(
-        {
-          actorId,
-          action: status === "DISABLED" ? "user.disable" : "user.enable",
-          targetType: "profile",
-          targetId: id,
-        },
-        tx,
-      );
-      return updated;
-    });
-
-    const { error } = await supabaseAdmin.auth.admin.updateUserById(id, {
-      ban_duration: status === "DISABLED" ? "876000h" : "none",
-    });
-    if (error) {
+    if (authError) {
+      const error = authError as { status?: number; message: string };
       return res.status(error.status ?? 502).json({ error: error.message, profile });
     }
 

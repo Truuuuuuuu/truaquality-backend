@@ -10,6 +10,10 @@ export const updateStatusSchema = z.object({
   status: z.enum(["ACTIVE", "DISABLED"]),
 });
 
+export const updateRoleSchema = z.object({
+  systemRole: z.enum(["ADMIN", "STAFF"]),
+});
+
 export const userIdParams = z.object({ id: z.uuid() });
 
 const isoDate = z.iso.datetime({ offset: true }).transform((value) => new Date(value));
