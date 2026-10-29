@@ -115,3 +115,21 @@ describe("simulatedFirmwareVersion", () => {
     assert.equal(simulatedFirmwareVersion(false), "0.6.1");
   });
 });
+
+
+import { doScenarioSample } from "./simulatorSignals.ts";
+import { syntheticDoPolicy } from "../testing/doFixtures.ts";
+test("pending DO numeric scenarios and spikes are refused", () => {
+  const pending = {ingest: {state: "pending" as const, evidenceRef: "test"}, assessment: {state: "pending" as const, kind: "low" as const, evidenceRef: "test"}};
+  assert.throws(() => doScenarioSample("normal", 0, pending), /pending/);
+  assert.equal(typeof parseSpike("dissolvedOxygen=5:4"), "string");
+});
+test("synthetic DO scenario omission and deterministic policy-derived levels", () => {
+ assert.deepEqual(doScenarioSample("missing", 0, syntheticDoPolicy), {});
+ assert.deepEqual(doScenarioSample("fault", 0, syntheticDoPolicy), {status: "no_signal"});
+ for (const scenario of ["normal", "low", "critical", "recovery"] as const) {
+  const sample = doScenarioSample(scenario, 5, syntheticDoPolicy);
+  assert.deepEqual(sample, doScenarioSample(scenario, 5, syntheticDoPolicy));
+  assert.ok(sample.value! >= 0 && sample.value! <= 20);
+ }
+});

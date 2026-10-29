@@ -91,3 +91,9 @@ describe("loadOpenAlerts (one batched query)", () => {
     );
   });
 });
+
+
+test("known pending DO history keeps worst unresolved severity", () => {
+  const rows = [{pondId: "p", parameter: "dissolvedOxygen", severity: "WARNING" as const}, {pondId: "p", parameter: "dissolvedOxygen", severity: "CRITICAL" as const}];
+  assert.equal(openAlertsByPond(rows).get("p")?.dissolvedOxygen, "CRITICAL");
+});

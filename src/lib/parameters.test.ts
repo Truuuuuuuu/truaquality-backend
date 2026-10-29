@@ -7,6 +7,9 @@ import {
   PARAMETER_BOUNDS,
   PARAMETER_DISPLAY,
   PARAMETER_IDS,
+  KNOWN_PARAMETER_IDS,
+  isKnownParameterId,
+  isParameterId,
   PARAMETER_THRESHOLDS,
   PH_CRITICAL_MAX,
   PH_CRITICAL_MIN,
@@ -19,6 +22,26 @@ import {
 } from "./parameters.ts";
 
 const PROFILES = Object.keys(PARAMETER_THRESHOLDS) as ThresholdProfile[];
+
+describe("known identity is separate from the legacy numeric contract", () => {
+  test("DO is known last but has no numeric legacy bounds or thresholds", () => {
+    assert.deepEqual(KNOWN_PARAMETER_IDS, ["temperature", "turbidity", "ph", "dissolvedOxygen"]);
+    assert.equal(isKnownParameterId("dissolvedOxygen"), true);
+    assert.equal(isParameterId("dissolvedOxygen"), false);
+    for (const id of ["dissolved_oxygen", "constructor", "__proto__", "oxygen"]) {
+      assert.equal(isKnownParameterId(id), false);
+    }
+    assert.equal(JSON.stringify(PARAMETER_BOUNDS), '{"temperature":{"min":-5,"max":60},"turbidity":{"min":0,"max":4000},"ph":{"min":0,"max":14}}');
+    const legacy = '{"temperature":{"safeMin":20,"safeMax":30,"criticalMin":15,"criticalMax":35.5},"turbidity":{"safeMin":0,"safeMax":25,"criticalMin":0,"criticalMax":3000,"criticalPending":true},"ph":{"safeMin":6.5,"safeMax":9.5,"criticalMin":0,"criticalMax":14,"criticalPending":true}}';
+    for (const profile of PROFILES) assert.equal(JSON.stringify(thresholdsFor(profile)), legacy);
+    assert.equal(JSON.stringify(ALERT_HOLD_READINGS), '{"temperature":1,"turbidity":4,"ph":4}');
+  });
+  test("DO display convention carries no accuracy claim", () => {
+    assert.deepEqual(PARAMETER_DISPLAY.dissolvedOxygen, {
+      label: "Dissolved oxygen", unit: "mg/L", precision: 2, exportHeader: "Dissolved oxygen (mg/L)",
+    });
+  });
+});
 
 describe("thresholdProfileFor", () => {
   test("null, undefined and an unknown type fall back to UNSET", () => {

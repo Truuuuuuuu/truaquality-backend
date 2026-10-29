@@ -1,9 +1,10 @@
+import { productionPolicyResolver, type ParameterPolicyResolver } from "./parameterPolicies.ts";
 import { Prisma } from "../generated/prisma/client.ts";
 import { describeAnalysis } from "./analysisSummary.ts";
-import { isParameterId, thresholdsFor } from "./parameters.ts";
+import { isKnownParameterId, thresholdsFor } from "./parameters.ts";
 import { prisma } from "./prisma.ts";
 import { rawRetentionDays } from "./readingRollup.ts";
-import { analyzeSeries, previousRange, type ParameterAnalysis, type SeriesPoint } from "./seriesAnalysis.ts";
+import { analyzeSeries, previousRange, type AnyParameterAnalysis, type SeriesPoint } from "./seriesAnalysis.ts";
 
 // The data and analysis behind GET /ponds/:id/series, GET /ponds/:id/analysis and the export's Summary sheet,
 // in one place so the dashboard and the exported report can never show different numbers or sentences.
@@ -105,9 +106,10 @@ export async function loadSeries(
   };
 }
 
-export type PondParameterAnalysis = ParameterAnalysis & { previousAvg: number | null; summary: string };
+export type PondParameterAnalysis = AnyParameterAnalysis & { previousAvg: number | null; previousChange?: number | null; summary: string };
 
 export type PondAnalysis = {
+  resolution?: "raw" | "hour" | "day";
   from: Date;
   to: Date;
   previousFrom: Date;
@@ -132,25 +134,27 @@ export async function analyzePondRange({
   from: Date;
   to: Date;
   rolling: boolean;
-}): Promise<PondAnalysis> {
+}, resolver: ParameterPolicyResolver = productionPolicyResolver): Promise<PondAnalysis> {
   const range = { from, to };
   const previous = previousRange(range);
   const [current, before] = await Promise.all([
     loadSeries(pondId, parameter, range.from, range.to),
     loadSeries(pondId, parameter, previous.from, previous.to),
   ]);
-  const analysis = analyzeSeries(current.points, range, pondType);
-  const previousAnalysis = analyzeSeries(before.points, previous, pondType);
+  const analysis = analyzeSeries(current.points, range, pondType, resolver, current.resolution);
+  const previousAnalysis = analyzeSeries(before.points, previous, pondType, resolver, before.resolution);
 
   const thresholds = thresholdsFor(pondType);
   const parameters: Record<string, PondParameterAnalysis> = {};
   for (const [parameterId, result] of Object.entries(analysis)) {
-    if (!isParameterId(parameterId)) continue;
-    const withPrevious = { ...result, previousAvg: previousAnalysis[parameterId]?.avg ?? null };
+    if (!isKnownParameterId(parameterId)) continue;
+    const previousAvg = previousAnalysis[parameterId]?.avg ?? null;
+    const withPrevious = { ...result, previousAvg,
+      ...(parameterId === "dissolvedOxygen" ? { previousChange: previousAvg === null ? null : result.avg - previousAvg } : {}) };
     parameters[parameterId] = {
       ...withPrevious,
-      summary: describeAnalysis(parameterId, withPrevious, thresholds[parameterId], { ...range, rolling }),
+      summary: describeAnalysis(parameterId, withPrevious, parameterId === "dissolvedOxygen" ? resolver.assessmentPolicyFor(parameterId, pondType) : thresholds[parameterId], { ...range, rolling, resolution: current.resolution }),
     };
   }
-  return { from: range.from, to: range.to, previousFrom: previous.from, previousTo: previous.to, parameters };
+  return { resolution: current.resolution, from: range.from, to: range.to, previousFrom: previous.from, previousTo: previous.to, parameters };
 }

@@ -101,6 +101,87 @@
       "body": "{\"firmwareVersion\":\"0.7.0\",\"wifiSsid\":\"BFAR-Pond-1\",\"diag\":{\"rssi\":-67,\"uptimeS\":86400,\"resetReason\":\"power_on\",\"freeHeap\":201344,\"queued\":3},\"sensors\":{\"temperature\":\"ok\",\"turbidity\":\"ok\",\"ph\":\"no_signal\"},\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3}}]}",
       "signature": "2eeb0c438c39147db79bb7ce63151ca38eeb5f395dd57c4bc12b663151d1eb19",
       "payload": "v1.2eeb0c438c39147db79bb7ce63151ca38eeb5f395dd57c4bc12b663151d1eb19.{\"firmwareVersion\":\"0.7.0\",\"wifiSsid\":\"BFAR-Pond-1\",\"diag\":{\"rssi\":-67,\"uptimeS\":86400,\"resetReason\":\"power_on\",\"freeHeap\":201344,\"queued\":3},\"sensors\":{\"temperature\":\"ok\",\"turbidity\":\"ok\",\"ph\":\"no_signal\"},\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3}}]}"
+    },
+    {
+      "name": "do-normal",
+      "secret": "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
+      "deviceId": "00000000-0000-4000-8000-000000000001",
+      "topic": "truaquality/v1/devices/00000000-0000-4000-8000-000000000001/readings",
+      "body": "{\"firmwareVersion\":\"0.8.0-do-contract\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3,\"ph\":7.1,\"dissolvedOxygen\":7.25}}]}",
+      "signature": "7866dcfa9aa29f78edfe9dfd6dd7f549e6cc6586b6d0ab3e3e208e8b2211e50e",
+      "payload": "v1.7866dcfa9aa29f78edfe9dfd6dd7f549e6cc6586b6d0ab3e3e208e8b2211e50e.{\"firmwareVersion\":\"0.8.0-do-contract\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3,\"ph\":7.1,\"dissolvedOxygen\":7.25}}]}"
+    },
+    {
+      "name": "do-zero",
+      "secret": "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
+      "deviceId": "00000000-0000-4000-8000-000000000001",
+      "topic": "truaquality/v1/devices/00000000-0000-4000-8000-000000000001/readings",
+      "body": "{\"firmwareVersion\":\"0.8.0-do-contract\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3,\"ph\":7.1,\"dissolvedOxygen\":0}}]}",
+      "signature": "aae4ffedfc923002381c8641fefe633f61973dae7c88b5a573f286ad5177ae31",
+      "payload": "v1.aae4ffedfc923002381c8641fefe633f61973dae7c88b5a573f286ad5177ae31.{\"firmwareVersion\":\"0.8.0-do-contract\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3,\"ph\":7.1,\"dissolvedOxygen\":0}}]}"
+    },
+    {
+      "name": "do-round-down",
+      "secret": "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
+      "deviceId": "00000000-0000-4000-8000-000000000001",
+      "topic": "truaquality/v1/devices/00000000-0000-4000-8000-000000000001/readings",
+      "body": "{\"firmwareVersion\":\"0.8.0-do-contract\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3,\"ph\":7.1,\"dissolvedOxygen\":7.23}}]}",
+      "signature": "89f2e008c081cf5f3345f2bd28a1dc6e7ee9506bc6f7c53473a3be4963e73663",
+      "payload": "v1.89f2e008c081cf5f3345f2bd28a1dc6e7ee9506bc6f7c53473a3be4963e73663.{\"firmwareVersion\":\"0.8.0-do-contract\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3,\"ph\":7.1,\"dissolvedOxygen\":7.23}}]}"
+    },
+    {
+      "name": "do-round-up",
+      "secret": "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
+      "deviceId": "00000000-0000-4000-8000-000000000001",
+      "topic": "truaquality/v1/devices/00000000-0000-4000-8000-000000000001/readings",
+      "body": "{\"firmwareVersion\":\"0.8.0-do-contract\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3,\"ph\":7.1,\"dissolvedOxygen\":7.24}}]}",
+      "signature": "40fc3300666fbc8ed5cf13b69e07ce91f686a17c9e01641a7be2810503b96c4a",
+      "payload": "v1.40fc3300666fbc8ed5cf13b69e07ce91f686a17c9e01641a7be2810503b96c4a.{\"firmwareVersion\":\"0.8.0-do-contract\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3,\"ph\":7.1,\"dissolvedOxygen\":7.24}}]}"
+    },
+    {
+      "name": "do-midpoint",
+      "secret": "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
+      "deviceId": "00000000-0000-4000-8000-000000000001",
+      "topic": "truaquality/v1/devices/00000000-0000-4000-8000-000000000001/readings",
+      "body": "{\"firmwareVersion\":\"0.8.0-do-contract\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3,\"ph\":7.1,\"dissolvedOxygen\":1.13}}]}",
+      "signature": "cfbb6a9170eebc869396128d1c533020ff06840b824d0b490fcd05488d0c15a3",
+      "payload": "v1.cfbb6a9170eebc869396128d1c533020ff06840b824d0b490fcd05488d0c15a3.{\"firmwareVersion\":\"0.8.0-do-contract\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3,\"ph\":7.1,\"dissolvedOxygen\":1.13}}]}"
+    },
+    {
+      "name": "do-carry",
+      "secret": "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
+      "deviceId": "00000000-0000-4000-8000-000000000001",
+      "topic": "truaquality/v1/devices/00000000-0000-4000-8000-000000000001/readings",
+      "body": "{\"firmwareVersion\":\"0.8.0-do-contract\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3,\"ph\":7.1,\"dissolvedOxygen\":10}}]}",
+      "signature": "72648e9d763947519e7ce567c08561a71964cab58d89f962ab22ed089bee7c9b",
+      "payload": "v1.72648e9d763947519e7ce567c08561a71964cab58d89f962ab22ed089bee7c9b.{\"firmwareVersion\":\"0.8.0-do-contract\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3,\"ph\":7.1,\"dissolvedOxygen\":10}}]}"
+    },
+    {
+      "name": "do-not-fitted",
+      "secret": "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
+      "deviceId": "00000000-0000-4000-8000-000000000001",
+      "topic": "truaquality/v1/devices/00000000-0000-4000-8000-000000000001/readings",
+      "body": "{\"firmwareVersion\":\"0.8.0-do-contract\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3,\"ph\":7.1}}]}",
+      "signature": "40ce6ef6b5eff32c404a9ef4d8c759877456a008597c39880a3f5c7ca31fa401",
+      "payload": "v1.40ce6ef6b5eff32c404a9ef4d8c759877456a008597c39880a3f5c7ca31fa401.{\"firmwareVersion\":\"0.8.0-do-contract\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3,\"ph\":7.1}}]}"
+    },
+    {
+      "name": "do-batch-with-omissions",
+      "secret": "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
+      "deviceId": "00000000-0000-4000-8000-000000000001",
+      "topic": "truaquality/v1/devices/00000000-0000-4000-8000-000000000001/readings",
+      "body": "{\"firmwareVersion\":\"0.8.0-do-contract\",\"sensors\":{\"temperature\":\"ok\",\"turbidity\":\"ok\",\"ph\":\"ok\",\"dissolvedOxygen\":\"ok\"},\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3,\"ph\":7.1,\"dissolvedOxygen\":7.25}},{\"recordedAt\":\"2023-11-14T22:14:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3,\"ph\":7.1}},{\"recordedAt\":\"2023-11-14T22:15:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3,\"ph\":7.1,\"dissolvedOxygen\":0}}]}",
+      "signature": "4a4ec4fcc0b93c30d50f649f5f4fa0b72a6c4e2ce62375abdffbc66caaa771cb",
+      "payload": "v1.4a4ec4fcc0b93c30d50f649f5f4fa0b72a6c4e2ce62375abdffbc66caaa771cb.{\"firmwareVersion\":\"0.8.0-do-contract\",\"sensors\":{\"temperature\":\"ok\",\"turbidity\":\"ok\",\"ph\":\"ok\",\"dissolvedOxygen\":\"ok\"},\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3,\"ph\":7.1,\"dissolvedOxygen\":7.25}},{\"recordedAt\":\"2023-11-14T22:14:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3,\"ph\":7.1}},{\"recordedAt\":\"2023-11-14T22:15:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3,\"ph\":7.1,\"dissolvedOxygen\":0}}]}"
+    },
+    {
+      "name": "diagnostics-and-sensor-status-with-do-fault",
+      "secret": "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
+      "deviceId": "00000000-0000-4000-8000-000000000001",
+      "topic": "truaquality/v1/devices/00000000-0000-4000-8000-000000000001/readings",
+      "body": "{\"firmwareVersion\":\"0.8.0-do-contract\",\"wifiSsid\":\"BFAR-Pond-1\",\"diag\":{\"rssi\":-67,\"uptimeS\":86400,\"resetReason\":\"power_on\",\"freeHeap\":201344,\"queued\":3},\"sensors\":{\"temperature\":\"ok\",\"turbidity\":\"ok\",\"ph\":\"ok\",\"dissolvedOxygen\":\"no_signal\"},\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3,\"ph\":7.1}}]}",
+      "signature": "a5f70f63a2731f704fd6862ea59bf0261b4dcb1915d64de7a539d49e9d2a1d8d",
+      "payload": "v1.a5f70f63a2731f704fd6862ea59bf0261b4dcb1915d64de7a539d49e9d2a1d8d.{\"firmwareVersion\":\"0.8.0-do-contract\",\"wifiSsid\":\"BFAR-Pond-1\",\"diag\":{\"rssi\":-67,\"uptimeS\":86400,\"resetReason\":\"power_on\",\"freeHeap\":201344,\"queued\":3},\"sensors\":{\"temperature\":\"ok\",\"turbidity\":\"ok\",\"ph\":\"ok\",\"dissolvedOxygen\":\"no_signal\"},\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3,\"ph\":7.1}}]}"
     }
   ]
 }

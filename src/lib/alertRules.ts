@@ -1,3 +1,4 @@
+import { productionPolicyResolver, validateAssessmentPolicy, type ConfiguredLowPolicy, type ParameterPolicyResolver } from "./parameterPolicies.ts";
 import type { AlertSeverity } from "../generated/prisma/client.ts";
 import {
   ALERT_HOLD_MAX_GAP_MS,
@@ -6,6 +7,7 @@ import {
   severityFor,
   thresholdsFor,
   type ParameterId,
+  type KnownParameterId,
 } from "./parameters.ts";
 
 // The pure half of alert evaluation: given the open episode (if any) and the pond parameter's newest stored
@@ -90,10 +92,22 @@ function uniformSide(
 // an outage leaves a time gap, not a row), and then it is the LEAST severe of the N: four CRITICAL readings make
 // CRITICAL, but C, C, C, W is still WARNING. See decideAlertStep for why CRITICAL is held too.
 export function heldSeverityFor(
-  parameter: ParameterId,
+  parameter: KnownParameterId,
   pondType: string | null | undefined,
   recent: readonly HeldReading[],
+  resolver: ParameterPolicyResolver = productionPolicyResolver,
 ): AlertSeverity | null {
+  if (parameter === "dissolvedOxygen") {
+    const p = validateAssessmentPolicy(resolver.assessmentPolicyFor(parameter, pondType));
+    if (p.state !== "configured" || recent.length < p.holdReadings) return null;
+    let held: AlertSeverity | null = null;
+    for (let i = 0; i < p.holdReadings; i++) {
+      const severity = assessConfiguredLow(recent[i].value, p);
+      if (!severity || (i > 0 && recent[i-1].recordedAt.getTime() - recent[i].recordedAt.getTime() > p.maxGapMs)) return null;
+      if (!held || SEVERITY_RANK[severity] < SEVERITY_RANK[held]) held = severity;
+    }
+    return held;
+  }
   const hold = ALERT_HOLD_READINGS[parameter];
   if (recent.length === 0) return null;
   if (hold <= 1) return severityFor(parameter, recent[0].value, pondType);
@@ -180,12 +194,14 @@ export function heldSeveritiesFor(
 //   (4) Turbidity cannot go low and temperature is held at 1 (see tracksSide), so neither ever gets sideEntered
 //       and both behave exactly as before.
 export function decideAlertStep(
-  parameter: ParameterId,
+  parameter: KnownParameterId,
   pondType: string | null | undefined,
   open: OpenEpisode | null,
   latest: { value: number; recordedAt: Date },
   earlier: readonly HeldReading[] = [],
+  resolver: ParameterPolicyResolver = productionPolicyResolver,
 ): AlertStep {
+  if (parameter === "dissolvedOxygen") return decideLowStep(pondType, open, latest, earlier, resolver);
   const { value, recordedAt } = latest;
   const raw = severityFor(parameter, value, pondType);
   const severity = heldSeverityFor(parameter, pondType, [latest, ...earlier]);
@@ -255,4 +271,30 @@ export function sideChangeIsNews(
 // it has already reached reads as a fresh "too low/high", the wording it opened with.
 export function notificationKindFor(escalated: boolean): "ALERT_ESCALATED" | "ALERT_OPENED" {
   return escalated ? "ALERT_ESCALATED" : "ALERT_OPENED";
+}
+
+export function assessConfiguredLow(value: number, policy: ConfiguredLowPolicy): AlertSeverity | null {
+  validateAssessmentPolicy(policy);
+  if (!Number.isFinite(value)) throw new Error("nonfinite assessment value");
+  if (value < policy.criticalMin || (policy.criticalInclusive && value === policy.criticalMin)) return "CRITICAL";
+  if (value < policy.safeMin || (!policy.safeInclusive && value === policy.safeMin)) return "WARNING";
+  return null;
+}
+function decideLowStep(pondType: string | null | undefined, open: OpenEpisode | null,
+  latest: HeldReading, earlier: readonly HeldReading[], resolver: ParameterPolicyResolver): AlertStep {
+  const p = validateAssessmentPolicy(resolver.assessmentPolicyFor("dissolvedOxygen", pondType));
+  if (p.state !== "configured") return { kind: "none" };
+  const severity = heldSeverityFor("dissolvedOxygen", pondType, [latest, ...earlier], resolver);
+  if (!open) return severity ? { kind: "open", severity } : { kind: "none" };
+  if (latest.recordedAt <= open.lastRecordedAt) return { kind: "stale" };
+  if (severity) {
+    const previous = p.holdReadings <= 1 ? assessConfiguredLow(open.lastValue, p) : heldSeverityFor("dissolvedOxygen", pondType, earlier, resolver);
+    return { kind: "abnormal", severity, escalated: SEVERITY_RANK[severity] > SEVERITY_RANK[open.severity],
+      worsened: SEVERITY_RANK[severity] > (previous ? SEVERITY_RANK[previous] : 0) };
+  }
+  if (assessConfiguredLow(latest.value, p)) return { kind: "unheld" };
+  const nominalSince = open.nominalSince ?? latest.recordedAt;
+  const window = [latest, ...earlier].slice(0, p.holdReadings);
+  const clean = window.length === p.holdReadings && window.every(r => !assessConfiguredLow(r.value, p));
+  return { kind: "nominal", nominalSince, resolved: clean && latest.recordedAt.getTime() - nominalSince.getTime() >= p.recoveryMs };
 }

@@ -27,3 +27,12 @@ describe("seriesQuery range cap", () => {
     assert.equal(seriesQuery.safeParse({ from: iso(NOW - 24 * 60 * 60 * 1000) }).success, true);
   });
 });
+
+
+import { readingsPageQuery, readingsExportQuery } from "./ponds.ts";
+test("DO filters accept canonical key and reject alias", () => {
+  assert.equal(readingsPageQuery.safeParse({parameter: "dissolvedOxygen"}).success, true);
+  assert.equal(seriesQuery.safeParse({parameter: "dissolvedOxygen", from: "2030-01-01T00:00:00Z", to: "2030-01-02T00:00:00Z"}).success, true);
+  assert.equal(readingsPageQuery.safeParse({parameter: "dissolved_oxygen"}).success, false);
+  assert.equal(readingsExportQuery.safeParse({parameter: "dissolvedOxygen", from: "2030-01-01T00:00:00Z"}).success, true);
+});

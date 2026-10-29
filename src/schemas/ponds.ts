@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { PARAMETER_IDS } from "../lib/parameters.ts";
+import { KNOWN_PARAMETER_IDS } from "../lib/parameters.ts";
 
 export const pondIdParams = z.object({ id: z.uuid() });
 
@@ -26,7 +26,7 @@ const isoDate = z.iso.datetime({ offset: true }).transform((value) => new Date(v
 // not a raw timestamp, so a client can't be tempted to hand-craft one that skips the tie-breaking id.
 // `from`/`to` narrow the scan to a date/time range; the cursor still walks within that range.
 export const readingsPageQuery = z.object({
-  parameter: z.enum(PARAMETER_IDS).optional(),
+  parameter: z.enum(KNOWN_PARAMETER_IDS).optional(),
   before: z.string().optional(),
   from: isoDate.optional(),
   to: isoDate.optional(),
@@ -43,7 +43,7 @@ export const MAX_RANGE_MESSAGE = "range is limited to 2 years";
 // /series and /analysis. `to` defaults to now, so an open-ended range is measured to now.
 export const seriesQuery = z
   .object({
-    parameter: z.enum(PARAMETER_IDS).optional(),
+    parameter: z.enum(KNOWN_PARAMETER_IDS).optional(),
     from: isoDate,
     to: isoDate.optional(),
   })
@@ -53,7 +53,7 @@ export const seriesQuery = z
   });
 
 export const readingsExportQuery = z.object({
-  parameter: z.enum(PARAMETER_IDS).optional(),
+  parameter: z.enum(KNOWN_PARAMETER_IDS).optional(),
   from: isoDate,
   to: isoDate.optional(),
   resolution: z.enum(["raw", "hour"]).default("hour"),

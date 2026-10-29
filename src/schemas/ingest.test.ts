@@ -12,6 +12,28 @@ const RECORDED_AT = "2020-01-01T00:00:00Z";
 const sample = { recordedAt: RECORDED_AT, values: { temperature: 27 } };
 const samples = (n: number) => Array.from({ length: n }, () => sample);
 
+describe("DO structural compatibility", () => {
+  for (const status of SENSOR_STATUSES) {
+    test(`DO accepts existing status ${status}`, () => {
+      const parsed = ingestSchema.parse({
+        firmwareVersion: "0.8.0-do-contract",
+        sensors: { temperature: "ok", turbidity: "ok", ph: "ok", dissolvedOxygen: status },
+        samples: [{ recordedAt: RECORDED_AT, values: { temperature: 27, turbidity: 12, ph: 7, ...(status === "ok" ? { dissolvedOxygen: 0 } : {}) } }],
+      });
+      assert.equal(parsed.sensors?.dissolvedOxygen, status);
+      assert.equal(Object.hasOwn(parsed.samples[0]!.values, "dissolvedOxygen"), status === "ok");
+    });
+  }
+  test("DO numeric and null forms parse but strings/nonfinite fail", () => {
+    for (const value of [0, 7.23, null]) {
+      assert.equal(ingestSchema.safeParse({ samples: [{ recordedAt: RECORDED_AT, values: { dissolvedOxygen: value } }] }).success, true);
+    }
+    for (const value of ["7.23", NaN, Infinity, -Infinity]) {
+      assert.equal(ingestSchema.safeParse({ samples: [{ recordedAt: RECORDED_AT, values: { dissolvedOxygen: value } }] }).success, false);
+    }
+  });
+});
+
 describe("ingestSchema", () => {
   describe("sample count", () => {
     test("0 samples is rejected", () => {

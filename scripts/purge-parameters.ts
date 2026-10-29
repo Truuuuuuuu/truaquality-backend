@@ -1,4 +1,4 @@
-// Deletes every stored trace of a sensor parameter that has been removed from PARAMETER_BOUNDS: raw readings,
+// Deletes every stored trace of a sensor parameter that has been removed from the known registry: raw readings,
 // hourly summaries, and alert episodes (their notifications cascade with them). Nothing else ever cleans these
 // up — ingest just rejects the id from then on, so an alert left open for it would never resolve.
 //
@@ -7,7 +7,7 @@
 // Without --apply it only prints what would be deleted. Refuses any id that is still a live parameter.
 import "dotenv/config";
 import { parseArgs } from "node:util";
-import { isParameterId } from "../src/lib/parameters.ts";
+import { isKnownParameterId } from "../src/lib/parameters.ts";
 import { prisma } from "../src/lib/prisma.ts";
 
 const { values } = parseArgs({
@@ -22,9 +22,9 @@ if (parameters.length === 0) {
   console.error("Usage: npm run purge:parameters -- --parameter <id> [--parameter ...] [--apply]");
   process.exit(1);
 }
-const live = parameters.filter(isParameterId);
+const live = parameters.filter(isKnownParameterId);
 if (live.length > 0) {
-  console.error(`Refusing to purge live parameter(s): ${live.join(", ")}. Remove them from PARAMETER_BOUNDS first.`);
+  console.error(`Refusing to purge known parameter(s): ${live.join(", ")}. Remove them from KNOWN_PARAMETER_IDS first.`);
   process.exit(1);
 }
 

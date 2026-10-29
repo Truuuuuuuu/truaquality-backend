@@ -10,6 +10,7 @@ export function notificationDirection(
   value: number,
   pondType: string | null | undefined,
 ): "low" | "high" {
+  if (parameter === "dissolvedOxygen") return "low";
   if (!isParameterId(parameter)) return "high";
   return value < thresholdsFor(pondType)[parameter].safeMin ? "low" : "high";
 }

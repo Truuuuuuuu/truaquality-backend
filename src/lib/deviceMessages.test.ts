@@ -27,6 +27,36 @@ const fixture = JSON.parse(
 const vectors = fixture.vectors;
 const [v0, , v2] = vectors as [Vector, Vector, Vector];
 
+test("all eleven complete historical objects match independent capture", () => {
+  const legacy = JSON.parse(readFileSync(new URL("./__fixtures__/signing-vectors.legacy11.json", import.meta.url), "utf8")) as Vector[];
+  assert.equal(legacy.length, 11);
+  assert.deepEqual(vectors.slice(0, 11), legacy);
+});
+
+test("DO exact quantized bodies, zero, omission and newest status", () => {
+  for (const [i, value] of [7.25, 0, 7.23, 7.24, 1.13, 10].entries()) {
+    const v = vectors[11 + i];
+    assert.ok(v);
+    assert.equal(v.body, JSON.stringify({ firmwareVersion: "0.8.0-do-contract", samples: [{ recordedAt: "2023-11-14T22:13:20Z", values: { temperature: 27.5, turbidity: 12.3, ph: 7.1, dissolvedOxygen: value } }] }));
+  }
+  const absent = JSON.parse(vectors[17]!.body);
+  assert.equal("dissolvedOxygen" in absent.samples[0].values, false);
+  const batch = JSON.parse(vectors[18]!.body);
+  assert.deepEqual(batch.samples.map((s: { values: Record<string, number> }) => s.values.dissolvedOxygen), [7.25, undefined, 0]);
+  assert.equal(batch.sensors.dissolvedOxygen, "ok");
+  const fault = JSON.parse(vectors[19]!.body);
+  assert.equal(fault.sensors.dissolvedOxygen, "no_signal");
+  assert.equal("dissolvedOxygen" in fault.samples[0].values, false);
+});
+
+test("every appended DO signature binds exact topic and body", () => {
+  assert.ok(vectors.length > 11);
+  for (const v of vectors.slice(11)) {
+    assert.equal(isValidSignature(v.secret, v.topic + "/changed", v.body, v.signature), false);
+    assert.equal(isValidSignature(v.secret, v.topic, v.body + " ", v.signature), false);
+  }
+});
+
 function flipHexDigit(hex: string, index: number) {
   const replacement = hex[index] === "0" ? "1" : "0";
   return hex.slice(0, index) + replacement + hex.slice(index + 1);
@@ -37,8 +67,8 @@ function flipHexDigit(hex: string, index: number) {
 // signature changed when firmwareVersion went to 0.6.0 (the version string is inside the signed body). Vectors 8-10
 // (firmwareVersion 0.7.0) were appended for pH, with ph last in values and sensors. The pinned
 // literal is what stops a half-written fixture from letting every case below pass vacuously.
-test("fixture holds the eleven golden vectors", () => {
-  assert.equal(vectors.length, 11);
+test("fixture holds legacy and appended DO golden vectors", () => {
+  assert.equal(vectors.length, 20);
   assert.equal(v0.signature, "b537560d7b8e2fd2f7ff0f52b9b86ce9ee0f413f9db798ade49d7fedd395b491");
   for (const v of vectors) assert.match(v.secret, /not-real/);
 });

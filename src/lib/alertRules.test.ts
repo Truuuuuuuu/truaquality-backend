@@ -3,6 +3,7 @@ import { describe, test } from "node:test";
 import {
   ALERT_RECOVERY_MS,
   ALERT_RENOTIFY_MS,
+  assessConfiguredLow,
   decideAlertStep,
   heldSeveritiesFor,
   heldSeverityFor,
@@ -13,6 +14,44 @@ import {
   type OpenEpisode,
 } from "./alertRules.ts";
 import { ALERT_HOLD_MAX_GAP_MS, ALERT_HOLD_READINGS, PARAMETER_BOUNDS, thresholdsFor } from "./parameters.ts";
+import { productionPolicyResolver, validateAssessmentPolicy, type ParameterPolicyResolver, type ConfiguredLowPolicy } from "./parameterPolicies.ts";
+
+const syntheticLow = validateAssessmentPolicy({ state: "configured", kind: "low", evidenceRef: "synthetic-only",
+  provenance: { provider: "test", suppliedAt: "2030-01-01", reference: "synthetic", applicability: "test only" },
+  safeMin: 5, criticalMin: 2, safeInclusive: true, criticalInclusive: false,
+  holdReadings: 2, maxGapMs: 60000, recoveryMs: 120000, renotifyMs: 180000 });
+const syntheticResolver: ParameterPolicyResolver = { ...productionPolicyResolver, assessmentPolicyFor: () => syntheticLow };
+
+test("synthetic DO exact boundaries honor equality flags and no high-side limit", () => {
+  if (syntheticLow.state !== "configured") throw new Error("fixture");
+  for (const safeInclusive of [true, false]) for (const criticalInclusive of [true, false]) {
+    const p: ConfiguredLowPolicy = { ...syntheticLow, safeInclusive, criticalInclusive };
+    assert.equal(assessConfiguredLow(5, p), safeInclusive ? null : "WARNING");
+    assert.equal(assessConfiguredLow(5 - 1e-6, p), "WARNING");
+    assert.equal(assessConfiguredLow(5 + 1e-6, p), null);
+    assert.equal(assessConfiguredLow(2, p), criticalInclusive ? "CRITICAL" : "WARNING");
+    assert.equal(assessConfiguredLow(2 - 1e-6, p), "CRITICAL");
+    assert.equal(assessConfiguredLow(2 + 1e-6, p), "WARNING");
+    assert.equal(assessConfiguredLow(100, p), null);
+  }
+});
+test("synthetic DO missing/gapped holds cannot open, stale cannot mutate", () => {
+  assert.equal(heldSeverityFor("dissolvedOxygen", null, [{value: 1, recordedAt: T}], syntheticResolver), null);
+  assert.equal(heldSeverityFor("dissolvedOxygen", null, [{value: 1, recordedAt: at(60001)}, {value: 1, recordedAt: T}], syntheticResolver), null);
+  assert.deepEqual(decideAlertStep("dissolvedOxygen", null, episode(), {value: 1, recordedAt: T}, [], syntheticResolver), {kind: "stale"});
+});
+
+test("DO pending cannot resolve a recovering episode", () => {
+  assert.deepEqual(decideAlertStep("dissolvedOxygen", null, episode({ nominalSince: at(-999999) }),
+    { value: 7, recordedAt: at(60000) }), { kind: "none" });
+});
+test("synthetic DO low policy holds critical and recovers with configured timing", () => {
+  assert.deepEqual(decideAlertStep("dissolvedOxygen", null, null, { value: 1, recordedAt: at(60000) },
+    [{ value: 1, recordedAt: T }], syntheticResolver), { kind: "open", severity: "CRITICAL" });
+  assert.deepEqual(decideAlertStep("dissolvedOxygen", null, episode({ nominalSince: T }),
+    { value: 6, recordedAt: at(120000) }, [{ value: 6, recordedAt: at(60000) }], syntheticResolver),
+    { kind: "nominal", nominalSince: T, resolved: true });
+});
 
 // Characterization of today's alert episode state machine (temperature, plus table-derived turbidity cases). Pure: no DB, no env, no wall
 // clock. Temperature bands (BFAR): safe 20-30, critical 15-35.5 (strict < / > on both edges).

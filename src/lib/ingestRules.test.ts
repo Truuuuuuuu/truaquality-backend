@@ -8,6 +8,7 @@ import {
   MAX_SAMPLE_SKEW_MS,
 } from "./ingestRules.ts";
 import { PARAMETER_BOUNDS } from "./parameters.ts";
+import { productionPolicyResolver, type ParameterPolicyResolver } from "./parameterPolicies.ts";
 
 // Characterization of today's temperature and turbidity ingest decisions. Pure: no DB, no env, no wall clock — every
 // timestamp is derived from a fixed receivedAt so the boundaries are exact.
@@ -18,6 +19,62 @@ const device = { id: "d1", pondId: "p1", assignedAt: ASSIGNED_AT };
 const unassignedClock = { id: "d1", pondId: "p1", assignedAt: null };
 
 const at = (offsetMs: number) => new Date(R.getTime() + offsetMs);
+
+// Synthetic range for isolated software tests, not operational DO evidence.
+const doResolver: ParameterPolicyResolver = {
+  ...productionPolicyResolver,
+  ingestPolicyFor: (parameter) => parameter === "dissolvedOxygen"
+    ? { state: "active", evidenceRef: "test-only", bounds: { min: 0, max: 20 } }
+    : productionPolicyResolver.ingestPolicyFor(parameter),
+};
+
+describe("DO ingest policy boundary", () => {
+  test("pending is distinct from unknown and preserves valid legacy values", () => {
+    const result = classifySamples(device, [{ recordedAt: R, values: {
+      temperature: 27, turbidity: 12, ph: 7, dissolvedOxygen: 0, orp: 1,
+    } }], R);
+    assert.deepEqual(result.rows.map((row) => row.parameter), ["temperature", "turbidity", "ph"]);
+    assert.deepEqual(result.rejected.map(({ parameter, reason }) => ({ parameter, reason })), [
+      { parameter: "dissolvedOxygen", reason: "parameter validation pending" },
+      { parameter: "orp", reason: "unknown parameter" },
+    ]);
+  });
+
+  test("every finite default DO value is pending; null is silently absent", () => {
+    for (const value of [-1, 0, 7.2, 20, Number.MAX_VALUE]) {
+      const result = classifySamples(device, [{ recordedAt: R, values: { dissolvedOxygen: value } }], R);
+      assert.equal(result.rows.length, 0);
+      assert.equal(result.rejected[0]?.reason, "parameter validation pending");
+    }
+    assert.deepEqual(classifySamples(device, [{ recordedAt: R, values: { dissolvedOxygen: null } }], R), {
+      rows: [], rejected: [], storedParameters: new Set(),
+    });
+  });
+
+  test("explicit synthetic bounds accept zero and exact edges, reject just outside", () => {
+    for (const value of [0, 7.2, 20]) {
+      const result = classifySamples(device, [{ recordedAt: R, values: { dissolvedOxygen: value } }], R, doResolver);
+      assert.equal(result.rows[0]?.value, value);
+      assert.deepEqual([...result.storedParameters], ["dissolvedOxygen"]);
+      assert.deepEqual(result.rejected, []);
+    }
+    for (const value of [-0.001, 20.001]) {
+      const result = classifySamples(device, [{ recordedAt: R, values: { dissolvedOxygen: value, temperature: 27 } }], R, doResolver);
+      assert.deepEqual(result.rows.map((row) => row.parameter), ["temperature"]);
+      assert.equal(result.rejected[0]?.reason, "outside 0..20");
+    }
+  });
+
+  test("nonfinite direct input cannot reach rows under either resolver", () => {
+    for (const resolver of [productionPolicyResolver, doResolver]) {
+      for (const value of [NaN, Infinity, -Infinity]) {
+        const result = classifySamples(device, [{ recordedAt: R, values: { dissolvedOxygen: value, temperature: value } }], R, resolver);
+        assert.equal(result.rows.length, 0);
+        assert.deepEqual(result.rejected.map((row) => row.reason), ["nonfinite value", "nonfinite value"]);
+      }
+    }
+  });
+});
 
 describe("classifySamples", () => {
   test("a sample recorded at receivedAt is stored with that time", () => {

@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import type { Device } from "../generated/prisma/client.ts";
 import { createPrismaFake, type FakeAlert, type PrismaFakeOptions } from "../testing/prismaFake.ts";
 import { ALERT_RECOVERY_MS } from "./alertRules.ts";
-import { evaluatePondAlerts } from "./alerts.ts";
+import { evaluatePondAlerts, createEvaluatePondAlerts } from "./alerts.ts";
+import { productionPolicyResolver, validateAssessmentPolicy } from "./parameterPolicies.ts";
 import { ingestSamples } from "./ingest.ts";
 import { ALERT_HOLD_READINGS, thresholdsFor, type ParameterId } from "./parameters.ts";
 
@@ -60,6 +61,28 @@ const argsOf = (fake: Fake, op: string) =>
   fake.calls.filter((c) => c.op === op).map((c) => c.args as { data: Record<string, unknown> });
 
 const PREFIX = ["pond.findUnique", "$transaction", "tx.$executeRaw", "tx.reading.findFirst", "tx.alert.findFirst"];
+
+test("pending DO leaves seeded recovery and notifications untouched", async (t) => {
+  const fake = setup(t);
+  seedReading(fake, 7, minute(30), "dissolvedOxygen");
+  const open = seedAlert(fake, { parameter: "dissolvedOxygen", nominalSince: minute(0) });
+  const before = structuredClone(open);
+  await evaluatePondAlerts("pond-1", ["dissolvedOxygen"]);
+  assert.deepEqual(open, before);
+  assert.deepEqual(fake.ops(), ["pond.findUnique"]);
+  assert.equal(fake.notifications.length, 0);
+});
+test("synthetic configured DO opens low-only episode through production shell", async (t) => {
+  const fake = setup(t);
+  seedReading(fake, 1, minute(0), "dissolvedOxygen");
+  const policy = validateAssessmentPolicy({ state: "configured", kind: "low", evidenceRef: "synthetic",
+    provenance: { provider: "test", suppliedAt: "2030-01-01", reference: "test", applicability: "test only" },
+    safeMin: 5, criticalMin: 2, safeInclusive: true, criticalInclusive: false,
+    holdReadings: 1, maxGapMs: 60000, recoveryMs: 120000, renotifyMs: 180000 });
+  await createEvaluatePondAlerts({ policyResolver: { ...productionPolicyResolver, assessmentPolicyFor: () => policy } })("pond-1", ["dissolvedOxygen"]);
+  assert.equal(fake.alerts[0].severity, "CRITICAL");
+  assert.ok(fake.notifications.length > 0);
+});
 
 // ---------------------------------------------------------------------------------------------------------
 // Part A — evaluatePondAlerts driven directly against seeded state

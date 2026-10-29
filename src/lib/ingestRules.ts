@@ -1,6 +1,7 @@
 import type { z } from "zod";
 import type { ingestSchema } from "../schemas/ingest.ts";
-import { PARAMETER_BOUNDS, isParameterId, type ParameterId } from "./parameters.ts";
+import { isKnownParameterId, type KnownParameterId } from "./parameters.ts";
+import { productionPolicyResolver, validateIngestPolicy, type ParameterPolicyResolver } from "./parameterPolicies.ts";
 
 // A unit buffers at most a couple of hours offline; anything much older is a broken clock or a replay.
 // Exported so the rollup job (readingRollup.ts) knows how far back a "final" hour has to be.
@@ -18,7 +19,7 @@ export type RejectedValue = { recordedAt: Date; parameter: string; value: number
 export type ReadingRow = {
   pondId: string;
   deviceId: string;
-  parameter: ParameterId;
+  parameter: KnownParameterId;
   value: number;
   recordedAt: Date;
   receivedAt: Date;
@@ -32,10 +33,11 @@ export function classifySamples(
   device: { id: string; pondId: string; assignedAt: Date | null },
   samples: z.infer<typeof ingestSchema>["samples"],
   receivedAt: Date,
-): { rows: ReadingRow[]; rejected: RejectedValue[]; storedParameters: Set<ParameterId> } {
+  policyResolver: ParameterPolicyResolver = productionPolicyResolver,
+): { rows: ReadingRow[]; rejected: RejectedValue[]; storedParameters: Set<KnownParameterId> } {
   const rows: ReadingRow[] = [];
   const rejected: RejectedValue[] = [];
-  const storedParameters = new Set<ParameterId>();
+  const storedParameters = new Set<KnownParameterId>();
   for (const sample of samples) {
     const { recordedAt } = sample;
     // A null value means "this sensor had nothing to report" — the same thing an omitted key means. It's
@@ -58,11 +60,20 @@ export function classifySamples(
     }
 
     for (const [parameter, value] of values) {
-      if (!isParameterId(parameter)) {
+      if (!isKnownParameterId(parameter)) {
         rejected.push({ recordedAt, parameter, value, reason: "unknown parameter" });
         continue;
       }
-      const { min, max } = PARAMETER_BOUNDS[parameter];
+      if (!Number.isFinite(value)) {
+        rejected.push({ recordedAt, parameter, value, reason: "nonfinite value" });
+        continue;
+      }
+      const policy = validateIngestPolicy(policyResolver.ingestPolicyFor(parameter));
+      if (policy.state === "pending") {
+        rejected.push({ recordedAt, parameter, value, reason: "parameter validation pending" });
+        continue;
+      }
+      const { min, max } = policy.bounds;
       if (value < min || value > max) {
         rejected.push({ recordedAt, parameter, value, reason: `outside ${min}..${max}` });
         continue;

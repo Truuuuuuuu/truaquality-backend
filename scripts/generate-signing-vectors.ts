@@ -186,6 +186,39 @@ const inputs: VectorInput[] = [
   },
 ];
 
+// Fixture-only inputs; no physical bounds or operational policy are implied.
+const doBody = (value?: number): VectorInput["body"] => ({
+  firmwareVersion: "0.8.0-do-contract",
+  samples: [{ recordedAt: "2023-11-14T22:13:20Z", values: {
+    temperature: 27.5, turbidity: 12.3, ph: 7.1,
+    ...(value === undefined ? {} : { dissolvedOxygen: value }),
+  } }],
+});
+const doInput = (name: string, body: VectorInput["body"]): VectorInput => ({
+  name, secret: "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
+  deviceId: "00000000-0000-4000-8000-000000000001", body,
+});
+for (const [name, value] of [
+  ["do-normal", 7.25], ["do-zero", 0], ["do-round-down", 7.2349],
+  ["do-round-up", 7.236], ["do-midpoint", 1.125], ["do-carry", 9.999],
+] as const) inputs.push(doInput(name, doBody(value)));
+inputs.push(doInput("do-not-fitted", doBody()));
+inputs.push(doInput("do-batch-with-omissions", {
+  firmwareVersion: "0.8.0-do-contract",
+  sensors: { temperature: "ok", turbidity: "ok", ph: "ok", dissolvedOxygen: "ok" },
+  samples: [
+    doBody(7.25).samples[0]!,
+    { recordedAt: "2023-11-14T22:14:20Z", values: { temperature: 27.5, turbidity: 12.3, ph: 7.1 } },
+    { recordedAt: "2023-11-14T22:15:20Z", values: { temperature: 27.5, turbidity: 12.3, ph: 7.1, dissolvedOxygen: 0 } },
+  ],
+}));
+inputs.push(doInput("diagnostics-and-sensor-status-with-do-fault", {
+  firmwareVersion: "0.8.0-do-contract", wifiSsid: "BFAR-Pond-1",
+  diag: { rssi: -67, uptimeS: 86400, resetReason: "power_on", freeHeap: 201344, queued: 3 },
+  sensors: { temperature: "ok", turbidity: "ok", ph: "ok", dissolvedOxygen: "no_signal" },
+  samples: doBody().samples,
+}));
+
 const MAX_SIGNIFICANT_DIGITS = 6;
 const MIN_ABS = 1e-5;
 const MAX_ABS = 1e7;
@@ -251,10 +284,19 @@ function assertFirmwareRepresentable(input: VectorInput): void {
 
 // Refuse before anything is signed or written: a vector must never be "fixed" later by loosening the firmware.
 for (const input of inputs) {
+  if (!input.secret.includes("not-real")) throw new Error("Golden vectors require dummy secrets");
   assertFirmwareRepresentable(input);
 }
 
 const vectors = inputs.map(({ name, secret, deviceId, body: bodyObject }) => {
+  // Apply only to DO, after representability validation; legacy bytes never change.
+  for (const sample of bodyObject.samples) {
+    const value = sample.values.dissolvedOxygen;
+    if (value !== undefined) {
+      if (!Number.isFinite(value)) throw new Error("DO fixture must be finite");
+      sample.values.dissolvedOxygen = Math.floor(Math.fround(value) * 100 + 0.5) / 100;
+    }
+  }
   const topic = readingsTopic(deviceId);
   const body = JSON.stringify(bodyObject);
   const payload = signMessage(secret, topic, body);

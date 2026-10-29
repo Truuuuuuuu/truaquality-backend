@@ -20,6 +20,16 @@ export function isParameterId(value: string): value is ParameterId {
   return Object.hasOwn(PARAMETER_BOUNDS, value);
 }
 
+// Recognition is not authorization: DO has no approved numeric bounds yet. Keep legacy numeric consumers
+// on ParameterId until they explicitly handle pending policies.
+export type KnownParameterId = ParameterId | "dissolvedOxygen";
+export const KNOWN_PARAMETER_IDS: readonly [KnownParameterId, ...KnownParameterId[]] =
+  Object.freeze([...PARAMETER_IDS, "dissolvedOxygen"] as [KnownParameterId, ...KnownParameterId[]]);
+
+export function isKnownParameterId(value: string): value is KnownParameterId {
+  return isParameterId(value) || value === "dissolvedOxygen";
+}
+
 export type Threshold = {
   safeMin: number;
   safeMax: number;
@@ -170,7 +180,7 @@ export function severityFor(
 // casing mid-sentence ("pH averaged ...", not "ph averaged ..."); without it a sentence lowercases label. pH's
 // precision 2 is the wire precision the firmware sends; the dashboard tile rounds it to 1 (Phase 12).
 export const PARAMETER_DISPLAY: Record<
-  ParameterId,
+  KnownParameterId,
   {
     label: string;
     unit: string;
@@ -191,4 +201,5 @@ export const PARAMETER_DISPLAY: Record<
     sensorCeiling: 3000,
   },
   ph: { label: "pH", unit: "", precision: 2, exportHeader: "pH", sentenceLabel: "pH" },
+  dissolvedOxygen: { label: "Dissolved oxygen", unit: "mg/L", precision: 2, exportHeader: "Dissolved oxygen (mg/L)" },
 };

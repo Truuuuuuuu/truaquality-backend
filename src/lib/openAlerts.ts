@@ -1,9 +1,9 @@
 import type { AlertSeverity } from "../generated/prisma/client.ts";
-import { isParameterId, type ParameterId } from "./parameters.ts";
+import { isKnownParameterId, type KnownParameterId } from "./parameters.ts";
 import { prisma } from "./prisma.ts";
 
 export type OpenAlertRow = { pondId: string; parameter: string; severity: AlertSeverity };
-export type PondOpenAlerts = Partial<Record<ParameterId, AlertSeverity>>;
+export type PondOpenAlerts = Partial<Record<KnownParameterId, AlertSeverity>>;
 
 // The pond card keeps the held verdict (`heldSeverity`) so a spike shorter than the hold never flickers it. The
 // catch: an alert episode stays open until it recovers, so once the newest readings fall short of the hold again the
@@ -12,7 +12,7 @@ export type PondOpenAlerts = Partial<Record<ParameterId, AlertSeverity>>;
 export function openAlertsByPond(rows: OpenAlertRow[]) {
   const byPond = new Map<string, PondOpenAlerts>();
   for (const row of rows) {
-    if (!isParameterId(row.parameter)) continue;
+    if (!isKnownParameterId(row.parameter)) continue;
     const open = byPond.get(row.pondId) ?? {};
     // At most one unresolved episode per pond/parameter is expected; if two ever exist, show the worse.
     if (open[row.parameter] !== "CRITICAL") open[row.parameter] = row.severity;

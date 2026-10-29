@@ -1,4 +1,7 @@
-import { isParameterId, severityFor, thresholdsFor } from "./parameters.ts";
+import { productionPolicyResolver, validateAssessmentPolicy, type ParameterPolicyResolver } from "./parameterPolicies.ts";
+import { assessConfiguredLow } from "./alertRules.ts";
+import { isKnownParameterId, severityFor, thresholdsFor } from "./parameters.ts";
+import { compareNormalReference, normalReferenceFor, type ReferenceComparison } from "./parameterReferences.ts";
 
 // One chart point as /series builds it. `count` is how many readings the point summarizes: 1 at raw
 // resolution, the bucket's reading count for hourly/daily points, so averages can be weighted by it.
@@ -21,6 +24,16 @@ export type ParameterAnalysis = {
   worst: "nominal" | "warning" | "critical";
   trend: Trend | null;
 };
+
+export type ReferenceResolution = "raw" | "hour" | "day";
+export type DoReferenceAnalysis = {
+  outsideShare: number | null;
+  basis: "raw_samples" | "weighted_bucket_averages";
+  approximate: boolean;
+  minimumResult: ReferenceComparison | null;
+};
+export type DoParameterAnalysis = Omit<ParameterAnalysis, "worst" | "outOfRangeShare" | "trend"> & { thresholdState: "pending" | "configured" | "not_applicable"; worst: ParameterAnalysis["worst"] | null; outOfRangeShare: number | null; trend: null; referenceComparison: DoReferenceAnalysis };
+export type AnyParameterAnalysis = ParameterAnalysis | DoParameterAnalysis;
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -115,7 +128,9 @@ export function analyzeSeries(
   points: SeriesPoint[],
   range: { from: Date; to: Date },
   pondType: string | null | undefined,
-): Record<string, ParameterAnalysis> {
+  resolver: ParameterPolicyResolver = productionPolicyResolver,
+  referenceResolution?: ReferenceResolution,
+): Record<string, AnyParameterAnalysis> {
   const byParameter = new Map<string, SeriesPoint[]>();
   for (const point of points) {
     const list = byParameter.get(point.parameter) ?? [];
@@ -125,9 +140,43 @@ export function analyzeSeries(
 
   const thresholds = thresholdsFor(pondType);
   const rangeMs = range.to.getTime() - range.from.getTime();
-  const result: Record<string, ParameterAnalysis> = {};
-  for (const [parameter, list] of byParameter) {
-    if (!isParameterId(parameter)) continue;
+  const result: Record<string, AnyParameterAnalysis> = {};
+  for (const [parameter, parameterPoints] of byParameter) {
+    if (!isKnownParameterId(parameter)) continue;
+    // Invalid aggregate counts cannot stand in for absent samples or poison weighted arithmetic.
+    const list = parameter === "dissolvedOxygen" ? parameterPoints.filter(p =>
+      Number.isFinite(p.count) && p.count > 0 && Number.isFinite(p.avg) &&
+      Number.isFinite(p.min) && Number.isFinite(p.max)) : parameterPoints;
+    if (parameter === "dissolvedOxygen") {
+      const policy = validateAssessmentPolicy(resolver.assessmentPolicyFor(parameter, pondType));
+      const count = list.reduce((sum, p) => sum + p.count, 0);
+      if (!count) continue;
+      let worst: ParameterAnalysis["worst"] | null = null;
+      let share: number | null = null;
+      if (policy.state === "configured") {
+        worst = "nominal";
+        let out = 0;
+        for (const p of list) {
+          worst = worseOf(worst, assessConfiguredLow(p.min, policy));
+          if (assessConfiguredLow(p.avg, policy)) out += p.count;
+        }
+        share = out / count;
+      }
+      const reference = normalReferenceFor(pondType);
+      const min = Math.min(...list.map(p => p.min));
+      const outside = list.reduce((sum, p) => sum +
+        (compareNormalReference(p.avg, reference) === "outside_reference" ? p.count : 0), 0);
+      result[parameter] = { min, max: Math.max(...list.map(p => p.max)),
+        avg: list.reduce((sum, p) => sum + p.avg*p.count, 0)/count, worst, outOfRangeShare: share,
+        trend: null, thresholdState: policy.state,
+        referenceComparison: {
+          outsideShare: outside / count,
+          basis: referenceResolution === "raw" ? "raw_samples" : "weighted_bucket_averages",
+          approximate: referenceResolution !== "raw",
+          minimumResult: compareNormalReference(min, reference),
+        } };
+      continue;
+    }
     let min = Infinity;
     let max = -Infinity;
     let weightedSum = 0;

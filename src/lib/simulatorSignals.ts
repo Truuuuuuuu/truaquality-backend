@@ -1,12 +1,13 @@
 // Pure signal helpers for scripts/simulate-devices.ts — no Prisma, no env, no I/O. They live here rather than in the
 // script because tests may not import scripts/* (the script connects to the broker at import time).
 import { ALERT_RECOVERY_MS } from "./alertRules.ts";
+import { productionPolicyResolver, validateAssessmentPolicy, validateIngestPolicy, type IngestPolicy, type AssessmentPolicy, type ParameterPolicyResolver } from "./parameterPolicies.ts";
 import {
   ALERT_HOLD_MAX_GAP_MS,
   ALERT_HOLD_READINGS,
   PARAMETER_BOUNDS,
-  isParameterId,
-  type ParameterId,
+  isKnownParameterId,
+  type KnownParameterId,
 } from "./parameters.ts";
 
 // The simulated pond's pH follows a compressed day: dawn low (CO2 from overnight respiration) and afternoon high
@@ -35,17 +36,19 @@ export function phCurveValue(
   return Math.round(clamped * 100) / 100;
 }
 
-export type SpikeSpec = { parameter: ParameterId; value: number; everyN: number };
+export type SpikeSpec = { parameter: KnownParameterId; value: number; everyN: number };
 
 // `<param>=<value>:<everyN>`. Returns an error message instead of throwing so the script can print it and exit 1.
 // An out-of-bounds value is refused here because ingest would drop it and the spike would prove nothing.
-export function parseSpike(spec: string): SpikeSpec | string {
+export function parseSpike(spec: string, resolver: ParameterPolicyResolver = productionPolicyResolver): SpikeSpec | string {
   const match = /^([a-zA-Z][a-zA-Z0-9]*)=([^:]+):([^:]+)$/.exec(spec);
   if (!match) return `expected <parameter>=<value>:<everyN>; got "${spec}"`;
   const [, parameter, rawValue, rawEveryN] = match;
-  if (!isParameterId(parameter)) return `unknown parameter "${parameter}" in "${spec}"`;
+  if (!isKnownParameterId(parameter)) return `unknown parameter "${parameter}" in "${spec}"`;
   const value = Number(rawValue);
-  const bounds = PARAMETER_BOUNDS[parameter];
+  const policy = resolver.ingestPolicyFor(parameter);
+  if (policy.state !== "active") return `${parameter} ingest bounds are pending`;
+  const bounds = policy.bounds;
   if (rawValue.trim() === "" || !Number.isFinite(value) || value < bounds.min || value > bounds.max) {
     return `${parameter} spike value must be between ${bounds.min} and ${bounds.max}; got "${rawValue}"`;
   }
@@ -96,4 +99,25 @@ export function curveTimingWarnings(input: { dayMs: number; intervalMs: number }
 // D-17: pH arrives with firmware 0.7.0; a unit without pH looks like the shipping 0.6.1.
 export function simulatedFirmwareVersion(reportsPh: boolean): "0.7.0" | "0.6.1" {
   return reportsPh ? "0.7.0" : "0.6.1";
+}
+
+export const DO_SCENARIOS = ["normal", "low", "critical", "recovery", "missing", "fault"] as const;
+export type DoScenario = typeof DO_SCENARIOS[number];
+export function doScenarioSample(scenario: DoScenario, index: number,
+  policy: {ingest: IngestPolicy; assessment: AssessmentPolicy}, intervalMs = 60000): {value?: number; status?: "ok" | "no_signal"} {
+  if (!DO_SCENARIOS.includes(scenario) || !Number.isSafeInteger(index) || index < 0 || !Number.isFinite(intervalMs) || intervalMs <= 0) throw new Error("invalid DO scenario");
+  if (scenario === "missing") return {};
+  if (scenario === "fault") return {status: "no_signal"};
+  const ingest = validateIngestPolicy(policy.ingest);
+  const assessment = validateAssessmentPolicy(policy.assessment);
+  if (ingest.state !== "active" || assessment.state !== "configured") throw new Error("DO bounds and BFAR thresholds are pending; use isolated tests");
+  const margin = Math.min((assessment.safeMin - assessment.criticalMin) / 4, (ingest.bounds.max - ingest.bounds.min) / 100);
+  const normal = assessment.safeMin + margin;
+  const low = (assessment.safeMin + assessment.criticalMin) / 2;
+  const critical = assessment.criticalMin - margin;
+  if (!(margin > 0) || !(normal > assessment.safeMin) || !(critical < assessment.criticalMin) ||
+    [normal, low, critical].some(v => !Number.isFinite(v) || v < ingest.bounds.min || v > ingest.bounds.max)) throw new Error("DO scenario has no representable value within supplied bounds");
+  const value = scenario === "normal" ? normal : scenario === "low" ? low : scenario === "critical" ? critical
+    : index < assessment.holdReadings ? critical : normal;
+  return {value, status: "ok"};
 }

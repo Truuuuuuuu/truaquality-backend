@@ -1,6 +1,23 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { analyzeSeries, linearTrend, previousRange, type SeriesPoint } from "./seriesAnalysis.ts";
+import { productionPolicyResolver, validateAssessmentPolicy } from "./parameterPolicies.ts";
+import { describeAnalysis } from "./analysisSummary.ts";
+import { summaryRows } from "./exportSummary.ts";
+
+test("synthetic configured DO uses bucket minima; pending prose and workbook never imply safety", () => {
+ const range = {from: new Date(0), to: new Date(86400000)};
+ const points = [{parameter: "dissolvedOxygen", t: range.from, avg: 6, min: 1, max: 8, count: 4}];
+ const policy = validateAssessmentPolicy({state: "configured", kind: "low", evidenceRef: "synthetic", provenance: {provider: "test", suppliedAt: "2030-01-01", reference: "test", applicability: "test only"}, safeMin: 5, criticalMin: 2, safeInclusive: true, criticalInclusive: false, holdReadings: 2, maxGapMs: 60000, recoveryMs: 120000, renotifyMs: 180000});
+ const configured = analyzeSeries(points, range, null, {...productionPolicyResolver, assessmentPolicyFor: () => policy}).dissolvedOxygen;
+ assert.equal(configured.worst, "critical"); assert.equal(configured.outOfRangeShare, 0); assert.equal(configured.trend, null);
+ const pending = {...analyzeSeries(points, range, null).dissolvedOxygen, previousAvg: 5};
+ const summary = describeAnalysis("dissolvedOxygen", pending, productionPolicyResolver.assessmentPolicyFor("dissolvedOxygen"), {...range, rolling: false});
+ assert.ok(summary.includes("BFAR dissolved oxygen thresholds are pending; water quality has not been assessed."));
+ const row = summaryRows(["dissolvedOxygen"], {dissolvedOxygen: {...pending, summary}})[0];
+ assert.equal(row[4].value, null); assert.equal(row[5].value, "Pending BFAR thresholds"); assert.equal(row[6].value, "Not assessed");
+ assert.equal(typeof row[3].value, "number"); assert.ok(row[3].numFmt?.includes("0.00"));
+});
 
 const START = new Date("2030-01-01T00:00:00Z");
 const MINUTE = 60 * 1000;
@@ -173,5 +190,42 @@ describe("previousRange", () => {
   test("is the equal-length range ending where this one starts", () => {
     const previous = previousRange({ from: after(DAY), to: after(2 * DAY) });
     assert.deepEqual(previous, { from: START, to: after(DAY) });
+  });
+});
+
+
+test("pending DO preserves weighted numbers with unavailable assessments", () => {
+ const points = [{parameter: "dissolvedOxygen", t: START, avg: 4, min: 1, max: 6, count: 2}, {parameter: "dissolvedOxygen", t: after(HOUR), avg: 7, min: 7, max: 7, count: 1}];
+ const r = analyzeSeries(points, {from: START, to: after(DAY)}, null).dissolvedOxygen;
+ assert.deepEqual(r, {min: 1, max: 7, avg: 5, worst: null, outOfRangeShare: null, trend: null, thresholdState: "pending",
+   referenceComparison: {outsideShare: 2/3, basis: "weighted_bucket_averages", approximate: true, minimumResult: "outside_reference"}});
+});
+
+describe("independent DO reference statistics", () => {
+  const point = (avg: number, count = 1, min = avg, max = avg): SeriesPoint =>
+    ({parameter: "dissolvedOxygen", t: START, avg, min, max, count});
+  test("raw samples include zero and equality without operational verdicts", () => {
+    const r = analyzeSeries([point(0), point(5), point(5.01)], TWO_HOURS, null, productionPolicyResolver, "raw").dissolvedOxygen;
+    assert.ok("referenceComparison" in r);
+    assert.deepEqual(r.referenceComparison, {outsideShare: 2/3, basis: "raw_samples", approximate: false, minimumResult: "outside_reference"});
+    assert.equal(r.worst, null); assert.equal(r.outOfRangeShare, null); assert.equal(r.trend, null);
+  });
+  for (const resolution of ["hour", "day", undefined] as const) {
+    test(`${resolution ?? "unspecified"} uses count-weighted bucket averages, not minima or count heuristics`, () => {
+      const r = analyzeSeries([point(6, 3, 1, 8), point(5, 1)], TWO_HOURS, null, productionPolicyResolver, resolution).dissolvedOxygen;
+      assert.ok("referenceComparison" in r);
+      assert.equal(r.avg, 5.75); assert.equal(r.min, 1); assert.equal(r.max, 8);
+      assert.deepEqual(r.referenceComparison, {outsideShare: 0.25, basis: "weighted_bucket_averages", approximate: true, minimumResult: "outside_reference"});
+      const single = analyzeSeries([point(6)], TWO_HOURS, null, productionPolicyResolver, resolution).dissolvedOxygen;
+      assert.ok("referenceComparison" in single); assert.equal(single.referenceComparison.approximate, true);
+    });
+  }
+  test("invalid or empty points are absent, never fabricated zero statistics", () => {
+    for (const points of [[], [point(4, 0), point(4, -1), point(4, NaN), point(NaN), point(4, 1, Infinity)]]) {
+      assert.deepEqual(analyzeSeries(points, TWO_HOURS, null), {});
+    }
+    const r = analyzeSeries([point(6), point(4, 0)], TWO_HOURS, null).dissolvedOxygen;
+    assert.ok("referenceComparison" in r); assert.equal(r.referenceComparison.outsideShare, 0);
+    assert.equal(r.referenceComparison.minimumResult, "within_reference");
   });
 });

@@ -1,6 +1,7 @@
+import { productionPolicyResolver, validateAssessmentPolicy, type ParameterPolicyResolver } from "./parameterPolicies.ts";
 import { decideAlertStep, notificationKindFor, renotifyDue, sideChangeIsNews } from "./alertRules.ts";
 import { notifyActiveUsers } from "./notify.ts";
-import { ALERT_HOLD_READINGS, type ParameterId } from "./parameters.ts";
+import { ALERT_HOLD_READINGS, type KnownParameterId } from "./parameters.ts";
 import { prisma } from "./prisma.ts";
 
 // The decision rules (open / escalate / renotify / resolve and their timing) live in alertRules.ts; this file
@@ -10,7 +11,9 @@ import { prisma } from "./prisma.ts";
 // Re-evaluates one pond parameter's alert against its newest stored reading — not the incoming batch, so a
 // buffered backlog of older samples can never open or resolve an alert out of order. `pondType` decides which
 // threshold set applies.
-async function evaluateParameter(pondId: string, parameter: ParameterId, pondType: string | null) {
+async function evaluateParameter(pondId: string, parameter: KnownParameterId, pondType: string | null, resolver: ParameterPolicyResolver) {
+  const policy = parameter === "dissolvedOxygen" ? validateAssessmentPolicy(resolver.assessmentPolicyFor(parameter, pondType)) : null;
+  if (policy && policy.state !== "configured") return;
   await prisma.$transaction(async (tx) => {
     // MQTT messages are handled concurrently; two of them must not both see "no open alert" and open one each.
     // Transaction-scoped for the same pgbouncer reason as the rollup job's lock (readingRollup.ts).
@@ -28,7 +31,7 @@ async function evaluateParameter(pondId: string, parameter: ParameterId, pondTyp
     // N - 1 for the held window plus one more for the previous held severity, so N rows. A LIMIT walk of the
     // (pondId, parameter, recordedAt) index, never DISTINCT ON. Only a held parameter pays for the query, so
     // temperature (hold 1) issues exactly the statements it did before.
-    const hold = ALERT_HOLD_READINGS[parameter];
+    const hold = parameter === "dissolvedOxygen" ? (policy?.state === "configured" ? policy.holdReadings : 1) : ALERT_HOLD_READINGS[parameter];
     const earlier =
       hold > 1
         ? await tx.reading.findMany({
@@ -41,7 +44,7 @@ async function evaluateParameter(pondId: string, parameter: ParameterId, pondTyp
 
     const open = await tx.alert.findFirst({ where: { pondId, parameter, resolvedAt: null } });
 
-    const step = decideAlertStep(parameter, pondType, open, latest, earlier);
+    const step = decideAlertStep(parameter, pondType, open, latest, earlier, resolver);
 
     switch (step.kind) {
       case "none":
@@ -89,8 +92,8 @@ async function evaluateParameter(pondId: string, parameter: ParameterId, pondTyp
             select: sideEntered ? { recordedAt: true, value: true } : { recordedAt: true },
           });
           notify =
-            (sideEntered !== undefined && sideChangeIsNews(parameter, pondType, last?.value, sideEntered)) ||
-            (step.worsened && renotifyDue(last?.recordedAt ?? null, recordedAt));
+            (parameter !== "dissolvedOxygen" && sideEntered !== undefined && sideChangeIsNews(parameter, pondType, last?.value, sideEntered)) ||
+            (step.worsened && (policy?.state === "configured" ? !last?.recordedAt || recordedAt.getTime() - last.recordedAt.getTime() >= policy.renotifyMs : renotifyDue(last?.recordedAt ?? null, recordedAt)));
         }
 
         await tx.alert.update({
@@ -163,11 +166,15 @@ async function evaluateParameter(pondId: string, parameter: ParameterId, pondTyp
 
 // Opens, escalates, or resolves alerts for the parameters a pond just stored readings for. One transaction per
 // parameter, so a failure on one doesn't hold back the others.
-export async function evaluatePondAlerts(pondId: string, parameters: Iterable<ParameterId>) {
+export function createEvaluatePondAlerts({ policyResolver }: { policyResolver: ParameterPolicyResolver }) {
+ return async function evaluatePondAlerts(pondId: string, parameters: Iterable<KnownParameterId>) {
   // Read once here rather than inside each per-parameter transaction: the pond's type is the same for all of
   // them, and this runs on every ingested batch.
   const pond = await prisma.pond.findUnique({ where: { id: pondId }, select: { pondType: true } });
   for (const parameter of parameters) {
-    await evaluateParameter(pondId, parameter, pond?.pondType ?? null);
+    await evaluateParameter(pondId, parameter, pond?.pondType ?? null, policyResolver);
   }
 }
+
+}
+export const evaluatePondAlerts = createEvaluatePondAlerts({ policyResolver: productionPolicyResolver });

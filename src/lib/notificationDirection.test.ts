@@ -21,7 +21,7 @@ describe("notificationDirection", () => {
     assert.equal(notificationDirection("turbidity", thresholdsFor(null).turbidity.safeMax + 1, null), "high");
   });
   test("an unknown parameter id falls back to high", () => {
-    assert.equal(notificationDirection("dissolvedOxygen", 1, null), "high");
+    assert.equal(notificationDirection("unknown", 1, null), "high");
   });
   test("pH direction is the same for every pond-type profile", () => {
     for (const profile of Object.keys(PARAMETER_THRESHOLDS)) {
@@ -30,3 +30,5 @@ describe("notificationDirection", () => {
     }
   });
 });
+
+test("DO historical direction is always low", () => { for (const value of [0, 3, 8, 99]) assert.equal(notificationDirection("dissolvedOxygen", value, null), "low"); });

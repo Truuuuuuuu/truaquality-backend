@@ -3,10 +3,28 @@ import { describe, test } from "node:test";
 import { describeAnalysis, type SummaryRange } from "./analysisSummary.ts";
 import { thresholdsFor } from "./parameters.ts";
 import type { ParameterAnalysis } from "./seriesAnalysis.ts";
+import { analyzeSeries } from "./seriesAnalysis.ts";
+import { productionPolicyResolver } from "./parameterPolicies.ts";
 
 const HOUR = 60 * 60 * 1000;
 const NOW = new Date("2030-01-10T03:00:00Z"); // 11:00 AM in Manila
 const thresholds = thresholdsFor(null);
+const DAY_MS = 86400000;
+
+for (const resolution of ["raw", "hour", "day"] as const) {
+  test(`DO ${resolution} summary keeps reference, pending assessment and numeric change separate`, () => {
+    const range = rolling(DAY_MS);
+    const result = analyzeSeries([{parameter: "dissolvedOxygen", t: NOW, avg: 5, min: 0, max: 8, count: 1}], range, null, productionPolicyResolver, resolution).dissolvedOxygen;
+    const summary = describeAnalysis("dissolvedOxygen", {...result, previousAvg: 5}, productionPolicyResolver.assessmentPolicyFor("dissolvedOxygen"), {...range, resolution});
+    assert.match(summary, /BFAR dissolved oxygen thresholds are pending; water quality has not been assessed\./);
+    assert.match(summary, /Outside normal range: 100\.0%/);
+    assert.match(summary, /Lowest DO: 0\.00 mg\/L \(outside normal range\)/);
+    assert.match(summary, /Change versus the previous period: 0\.00 mg\/L/);
+    assert.doesNotMatch(summary, /stable|steady|improving|worsening|rising|falling|PHILMINAQ|all types/);
+    if (resolution === "raw") assert.match(summary, /of samples/);
+    else assert.ok(summary.includes(`Approximate, based on ${resolution === "hour" ? "hourly" : "daily"} averages`));
+  });
+}
 
 function rolling(ms: number): SummaryRange {
   return { from: new Date(NOW.getTime() - ms), to: NOW, rolling: true };

@@ -2,7 +2,7 @@ import ExcelJS from "exceljs";
 import type { Response } from "express";
 import type { ReadingHourly } from "../generated/prisma/client.ts";
 import { excelNumberFormat, SUMMARY_HEADERS, summaryRows } from "./exportSummary.ts";
-import { isParameterId, PARAMETER_DISPLAY, PARAMETER_IDS, type ParameterId } from "./parameters.ts";
+import { isKnownParameterId, PARAMETER_DISPLAY, KNOWN_PARAMETER_IDS, type KnownParameterId } from "./parameters.ts";
 import type { PondAnalysis } from "./pondAnalysis.ts";
 import { prisma } from "./prisma.ts";
 import { rawRetentionDays } from "./readingRollup.ts";
@@ -15,8 +15,20 @@ import { MAX_RANGE_MS } from "../schemas/ponds.ts";
 
 const EXPORT_RAW_MAX_RANGE_MS = 31 * 24 * 60 * 60 * 1000;
 const EXPORT_CHUNK_SIZE = 5000;
+const REVIEW_SOURCE_MAX_ROWS = 100_000;
 
 export type ExportResolution = "raw" | "hour";
+
+export type ReviewRawRow = { parameter: string; value: number; recordedAt: Date };
+export type ReviewHourlyRow = { parameter: string; sum: number; count: number; bucketStart: Date };
+
+// Library-only seam: routes never accept or construct this source from request data. The isolated review
+// supplies ordered synthetic rows without a database, broker, credentials or a runtime activation flag.
+export type SimulatedReadingsSource = {
+  dataOrigin: "simulated";
+  rawRows: () => AsyncIterable<ReviewRawRow>;
+  hourlyRows: () => AsyncIterable<ReviewHourlyRow>;
+};
 
 // Checks the range against retention/size limits for the chosen resolution. Returns an error message for
 // the route to answer with 400, or null once the range is fine to export.
@@ -50,7 +62,7 @@ function formatManilaTimestamp(date: Date) {
 // (the earlier, now-abandoned CSV export had to avoid it for exactly that reason). Built by excelNumberFormat so
 // the Readings and Summary sheets format a parameter identically, including a unitless one.
 function numFmtFor(parameterId: string) {
-  return isParameterId(parameterId) ? excelNumberFormat(parameterId) : undefined;
+  return isKnownParameterId(parameterId) ? excelNumberFormat(parameterId) : undefined;
 }
 
 const THIN_BORDER: Partial<ExcelJS.Borders> = {
@@ -119,7 +131,7 @@ async function streamPivotedXlsx<TCursor>(
 
 export type ReadingsExportParams = {
   pond: { id: string; name: string };
-  parameter?: ParameterId;
+  parameter?: KnownParameterId;
   from: Date;
   to: Date;
   resolution: ExportResolution;
@@ -135,7 +147,9 @@ const HEADER_FILL: ExcelJS.Fill = { type: "pattern", pattern: "solid", fgColor: 
 export async function streamReadingsExport(
   res: Response,
   { pond, parameter, from, to, resolution, analysis }: ReadingsExportParams,
+  reviewSource?: SimulatedReadingsSource,
 ) {
+  if (reviewSource && reviewSource.dataOrigin !== "simulated") throw new Error("invalid review data origin");
   // "close" also fires after a normal finish; only a close before the response finished is a disconnect.
   let clientGone = false;
   res.once("close", () => {
@@ -145,18 +159,19 @@ export async function streamReadingsExport(
 
   const filenameStem = pond.name.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "") || "pond";
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-  res.setHeader("Content-Disposition", `attachment; filename="${filenameStem}-readings-${resolution}.xlsx"`);
+  res.setHeader("Content-Disposition", `attachment; filename="${reviewSource ? "Simulated-data-" : ""}${filenameStem}-readings-${resolution}.xlsx"`);
 
   // useStyles: borders/fills/bold would otherwise be silently ignored — style info costs some performance,
   // which is exactly why the writer defaults it off.
   const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ stream: res, useStyles: true });
-  const columns = parameter ? [parameter] : PARAMETER_IDS;
+  const columns = parameter ? [parameter] : KNOWN_PARAMETER_IDS;
   const generated = formatManilaTimestamp(new Date());
 
   // A short report header (what/who/when this covers), then a blank row before the table — reads like a
   // report exported from any reporting tool, and re-states the filter a filename alone can't (the exact range
   // and, if set, which single parameter). Both sheets carry it, so either one printed alone still says what it is.
   const writeReportHeader = (target: ExcelJS.Worksheet, extra: [string, string][] = []) => {
+    if (reviewSource) target.addRow(["Simulated data"]).commit();
     target.addRow(["Pond", pond.name]).commit();
     target.addRow(["Date range (Asia/Manila)", `${formatManilaTimestamp(from)} to ${formatManilaTimestamp(to)}`]).commit();
     target.addRow(["Resolution", resolution === "raw" ? "Raw (per-minute)" : "Hourly average"]).commit();
@@ -171,7 +186,7 @@ export async function streamReadingsExport(
   const summarySheet = workbook.addWorksheet("Summary");
   // Column widths must be set before the first row is committed: the streaming writer emits them with the
   // sheet's first bytes, and a width set later is silently dropped.
-  [26, 12, 12, 12, 14, 12, 16, 18, 18, 90].forEach((width, index) => {
+  [26, 12, 12, 12, 18, 24, 18, 18, 22, 20, 62, 16, 26, 90].forEach((width, index) => {
     summarySheet.getColumn(index + 1).width = width;
   });
   writeReportHeader(summarySheet, [
@@ -189,7 +204,7 @@ export async function streamReadingsExport(
     cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
   });
   summaryHeader.commit();
-  for (const cells of summaryRows(columns, analysis.parameters)) {
+  for (const cells of summaryRows(columns, analysis.parameters, analysis.resolution)) {
     const row = summarySheet.addRow(cells.map((cell) => cell.value));
     row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
       const source = cells[colNumber - 1];
@@ -223,7 +238,32 @@ export async function streamReadingsExport(
   headerRow.commit();
 
   let outcome: { pages: number; aborted: boolean };
-  if (resolution === "raw") {
+  if (reviewSource) {
+    const iterator = (resolution === "raw" ? reviewSource.rawRows() : reviewSource.hourlyRows())[Symbol.asyncIterator]();
+    let consumed = 0;
+    try {
+      outcome = await streamPivotedXlsx<number>(sheet, columns, async () => {
+        const page: PivotSourceRow<number>[] = [];
+        while (page.length < EXPORT_CHUNK_SIZE && !isAborted()) {
+          const next = await iterator.next();
+          if (next.done) break;
+          if (++consumed > REVIEW_SOURCE_MAX_ROWS) throw new Error("simulated export source exceeds row limit");
+          const row = next.value;
+          const time = "recordedAt" in row ? row.recordedAt : row.bucketStart;
+          const value = "value" in row ? row.value : row.sum / row.count;
+          if (!Number.isFinite(time.getTime()) || !Number.isFinite(value)
+            || ("count" in row && (!Number.isFinite(row.count) || row.count <= 0))) {
+            throw new Error("invalid simulated export row");
+          }
+          if (time < from || time > to || !columns.includes(row.parameter as KnownParameterId)) continue;
+          page.push({ timeKey: formatManilaTimestamp(time), parameter: row.parameter, value, cursor: consumed });
+        }
+        return page;
+      }, isAborted);
+    } finally {
+      await iterator.return?.();
+    }
+  } else if (resolution === "raw") {
     outcome = await streamPivotedXlsx<{ recordedAt: Date; id: bigint }>(sheet, columns, async (cursor) => {
       const rows = await prisma.reading.findMany({
         where: {

@@ -56,9 +56,11 @@ import "dotenv/config";
 import { connectAsync, type MqttClient } from "mqtt";
 import { parseArgs } from "node:util";
 import { readingsTopic, signMessage } from "../src/lib/deviceMessages.ts";
+import { productionPolicyResolver } from "../src/lib/parameterPolicies.ts";
 import { PARAMETER_BOUNDS } from "../src/lib/parameters.ts";
 import {
   PH_CURVE,
+  DO_SCENARIOS, doScenarioSample, type DoScenario,
   curveTimingWarnings,
   parseSpike,
   phCurveValue,
@@ -70,6 +72,7 @@ import { SENSOR_STATUSES, type SensorStatus } from "../src/schemas/ingest.ts";
 
 const { values } = parseArgs({
   options: {
+    "do-scenario": { type: "string" },
     device: { type: "string", multiple: true },
     interval: { type: "string", default: "60" },
     fault: { type: "string", multiple: true },
@@ -88,6 +91,18 @@ const { values } = parseArgs({
 function fail(message: string): never {
   console.error(message);
   process.exit(1);
+}
+
+// --do-scenario normal|low|critical|recovery|missing|fault is explicitly synthetic.
+const doScenario = values["do-scenario"];
+if (doScenario && !DO_SCENARIOS.includes(doScenario as DoScenario)) fail("Invalid --do-scenario; use normal|low|critical|recovery|missing|fault");
+const doPolicy = {ingest: productionPolicyResolver.ingestPolicyFor("dissolvedOxygen"), assessment: productionPolicyResolver.assessmentPolicyFor("dissolvedOxygen")};
+if (doScenario) {
+  if (doScenario === "missing" || doScenario === "fault") {
+    if (!values["dry-run"]) fail("Pending DO missing/fault scenarios require --dry-run");
+  } else if (doPolicy.ingest.state !== "active" || doPolicy.assessment.state !== "configured") {
+    fail("DO bounds and BFAR thresholds are pending; numeric synthetic scenarios are available only in isolated tests.");
+  }
 }
 
 let dryRunReports: number | undefined;
@@ -265,11 +280,16 @@ function buildBody(unit: (typeof units)[number], reportIndex: number, elapsedMs:
   const sensors: Record<string, SensorStatus> = {};
   for (const parameter of Object.keys(unit.channels)) sensors[parameter] = faults.get(parameter) ?? "ok";
   for (const [parameter, status] of faults) sensors[parameter] = status;
+  if (doScenario) {
+    const sample = doScenarioSample(doScenario as DoScenario, reportIndex - 1, doPolicy, intervalMs);
+    if (sample.value !== undefined) sampleValues.dissolvedOxygen = sample.value;
+    if (sample.status) sensors.dissolvedOxygen = sample.status;
+  }
   // Key order is signed bytes and mirrors the firmware: firmwareVersion, wifiSsid, diag, sensors, samples.
   // Every diag number is an integer (Math.round), as the wire format requires. A faulted pH still counts as
   // reported (sensors.ph is present), so it stays 0.7.0.
   return {
-    firmwareVersion: simulatedFirmwareVersion("ph" in unit.channels),
+    firmwareVersion: doScenario ? "0.8.0-do-contract" : simulatedFirmwareVersion("ph" in unit.channels),
     wifiSsid: "Simulated-WiFi",
     diag: {
       rssi: Math.round(drift(unit.rssi)),

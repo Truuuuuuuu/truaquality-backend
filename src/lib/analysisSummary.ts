@@ -1,5 +1,6 @@
-import { PARAMETER_DISPLAY, type ParameterId, type Threshold } from "./parameters.ts";
-import type { ParameterAnalysis } from "./seriesAnalysis.ts";
+import type { AssessmentPolicy } from "./parameterPolicies.ts";
+import { PARAMETER_DISPLAY, type KnownParameterId, type Threshold } from "./parameters.ts";
+import type { AnyParameterAnalysis, ReferenceResolution } from "./seriesAnalysis.ts";
 
 // Words one parameter's analysis as a short paragraph for staff who'd rather read "falling by about 0.3 °C per
 // day" than decode the chart's stats row. Built here, next to the analysis it describes, so the wording is covered
@@ -32,6 +33,7 @@ export type SummaryRange = {
   to: Date;
   // True when the caller asked for "the last N hours" (no `to`), so the summary says so rather than quoting dates.
   rolling: boolean;
+  resolution?: ReferenceResolution;
 };
 
 function rangePhrase(range: SummaryRange): string {
@@ -51,11 +53,27 @@ function sharePhrase(share: number): string {
 }
 
 export function describeAnalysis(
-  parameter: ParameterId,
-  analysis: ParameterAnalysis & { previousAvg: number | null },
-  threshold: Threshold,
+  parameter: KnownParameterId,
+  analysis: AnyParameterAnalysis & { previousAvg: number | null },
+  threshold: Threshold | AssessmentPolicy,
   range: SummaryRange,
 ): string {
+  if (parameter === "dissolvedOxygen") {
+    const numeric = `${rangePhrase(range)}, dissolved oxygen averaged ${analysis.avg.toFixed(2)} mg/L and ranged from ${analysis.min.toFixed(2)} to ${analysis.max.toFixed(2)} mg/L.`;
+    const policy = "state" in threshold ? threshold : null;
+    const assessment = !policy || policy.state === "pending"
+      ? "BFAR dissolved oxygen thresholds are pending; water quality has not been assessed."
+      : policy.state === "not_applicable"
+        ? "BFAR dissolved oxygen assessment is not applicable to this pond profile; water quality has not been assessed."
+        : `The supplied safe minimum is ${policy.safeInclusive ? "at least" : "greater than"} ${policy.safeMin.toFixed(2)} mg/L; the worst low-oxygen level was ${analysis.worst}.`;
+    const reference = "referenceComparison" in analysis ? analysis.referenceComparison : null;
+    const comparison = reference?.outsideShare === null || !reference ? "" :
+      ` Outside normal range: ${(reference.outsideShare * 100).toFixed(1)}%${reference.approximate ? ". Approximate, based on " + (range.resolution === "day" ? "daily averages" : range.resolution === "hour" ? "hourly averages" : "bucket averages") : " of samples"}.`;
+    const minimum = reference?.minimumResult ? ` Lowest DO: ${analysis.min.toFixed(2)} mg/L (${reference.minimumResult === "within_reference" ? "within normal range" : "outside normal range"}).` : "";
+    const previous = analysis.previousAvg === null ? "" : ` Change versus the previous period: ${analysis.avg - analysis.previousAvg > 0 ? "+" : ""}${(analysis.avg - analysis.previousAvg).toFixed(2)} mg/L.`;
+    return `${numeric} ${assessment}${comparison}${minimum} Dissolved oxygen trend classification is unavailable.${previous}`;
+  }
+  if ("state" in threshold || analysis.worst === null || analysis.outOfRangeShare === null) throw new Error("legacy analysis requires numeric thresholds");
   const { label, unit, precision, approximate, sensorCeiling, sentenceLabel } = PARAMETER_DISPLAY[parameter];
   const atCeiling = (v: number) => sensorCeiling !== undefined && v >= sensorCeiling;
   const number = (v: number) => (atCeiling(v) ? `≥ ${sensorCeiling}` : v.toFixed(precision));

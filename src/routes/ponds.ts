@@ -1,10 +1,11 @@
 import { pondRegistryRouter } from "./pondRegistry.ts";
 import { Router } from "express";
 import type { z } from "zod";
-import { Prisma, type AlertSeverity } from "../generated/prisma/client.ts";
+import { Prisma } from "../generated/prisma/client.ts";
 import { deviceSummarySelect, reportedStatuses } from "../lib/devices.ts";
-import { heldSeveritiesFor, type HeldReading } from "../lib/alertRules.ts";
-import { ALERT_HOLD_READINGS, isParameterId, PARAMETER_IDS, type ParameterId, thresholdsFor } from "../lib/parameters.ts";
+import { type HeldReading } from "../lib/alertRules.ts";
+import { isKnownParameterId, type KnownParameterId } from "../lib/parameters.ts";
+import { buildPondParameterPayload, recentReadingQueryInputs } from "../lib/pondParameterPayload.ts";
 import { loadOpenAlerts, type PondOpenAlerts } from "../lib/openAlerts.ts";
 import { prisma } from "../lib/prisma.ts";
 import { analyzePondRange, loadSeries } from "../lib/pondAnalysis.ts";
@@ -23,32 +24,32 @@ pondsRouter.use(pondRegistryRouter);
 
 type LatestReading = { value: number; recordedAt: Date };
 type RecentRow = LatestReading & { pondId: string; parameter: string };
-type PondRecent = Partial<Record<ParameterId, HeldReading[]>>;
+type PondRecent = Partial<Record<KnownParameterId, HeldReading[]>>;
 
 // The most recent ALERT_HOLD_READINGS[parameter] readings of every parameter for each pond (1 for temperature, 4
-// for turbidity). A LATERAL ... LIMIT k.lim per (pond, parameter) walks the (pondId, parameter, recordedAt DESC)
+// for turbidity). A LATERAL ... LIMIT CASE WHEN k.parameter = 'dissolvedOxygen' THEN p.do_lim ELSE k.lim END per (pond, parameter) walks the (pondId, parameter, recordedAt DESC)
 // index straight to the newest rows, so it stays fast as history grows — unlike DISTINCT ON, which reads every row
 // for the pond. The per-parameter limit rides in a second unnest array (`::int[]`) so the query count is unchanged.
-async function recentReadingsByPond(pondIds: string[]) {
+async function recentReadingsByPond(ponds: {id: string; pondType: string | null}[]) {
+  const {pondIds, doLimits, ids, limits} = recentReadingQueryInputs(ponds);
   const byPond = new Map<string, PondRecent>();
   if (pondIds.length === 0) return byPond;
 
-  const limits = PARAMETER_IDS.map((id) => ALERT_HOLD_READINGS[id]);
   const rows = await prisma.$queryRaw<RecentRow[]>`
     SELECT p.id AS "pondId", k.parameter, r.value, r."recordedAt"
-    FROM unnest(${pondIds}::uuid[]) AS p(id)
-    CROSS JOIN unnest(${PARAMETER_IDS}::text[], ${limits}::int[]) AS k(parameter, lim)
+    FROM unnest(${pondIds}::uuid[], ${doLimits}::int[]) AS p(id, do_lim)
+    CROSS JOIN unnest(${ids}::text[], ${limits}::int[]) AS k(parameter, lim)
     CROSS JOIN LATERAL (
       SELECT value, "recordedAt"
       FROM "Reading"
       WHERE "pondId" = p.id AND parameter = k.parameter
       ORDER BY "recordedAt" DESC
-      LIMIT k.lim
+      LIMIT CASE WHEN k.parameter = 'dissolvedOxygen' THEN p.do_lim ELSE k.lim END
     ) r
   `;
 
   for (const row of rows) {
-    if (!isParameterId(row.parameter)) continue;
+    if (!isKnownParameterId(row.parameter)) continue;
     const recent = byPond.get(row.pondId) ?? {};
     (recent[row.parameter] ??= []).push({ value: row.value, recordedAt: row.recordedAt });
     byPond.set(row.pondId, recent);
@@ -73,14 +74,6 @@ function latestOf(recent: PondRecent) {
 // pond green exactly as it leaves no alert open. It is decided here, by the same heldSeveritiesFor, so the frontend
 // never knows the hold count or the band. In `heldSeverity`, null = in range, or out of range but not yet held; keys
 // are exactly the parameters present in `latest`.
-function heldSeverityOf(pondType: string | null | undefined, recent: PondRecent) {
-  const held: Record<string, AlertSeverity | null> = {};
-  for (const [parameter, severity] of Object.entries(heldSeveritiesFor(pondType, recent))) {
-    held[parameter] = severity ?? null;
-  }
-  return held;
-}
-
 // The pond payloads select the unit's raw sensorStatus column alongside its summary so the board can show why a
 // single probe went silent (the unit's own last word on each sensor) on its normal 30 s poll, without a per-pond
 // diagnostics fetch. The raw Json never reaches the client: it is stripped off `device` and re-exposed as a
@@ -105,8 +98,7 @@ function toPondPayload(pond: PondWithDevice, recent: PondRecent, openAlerts: Pon
     ...rest,
     device: summary,
     latest: latestOf(recent),
-    thresholds: thresholdsFor(pond.pondType),
-    heldSeverity: heldSeverityOf(pond.pondType, recent),
+    ...buildPondParameterPayload(pond.pondType, recent),
     // Unresolved alert episodes per parameter, archived ponds included (the frontend decides what to show).
     openAlerts,
     sensorStatus,
@@ -119,7 +111,7 @@ pondsRouter.get("/", async (_req, res) => {
     include: { device: { select: pondDeviceSelect } },
   });
   const ids = ponds.map((pond) => pond.id);
-  const [recent, open] = await Promise.all([recentReadingsByPond(ids), loadOpenAlerts(ids)]);
+  const [recent, open] = await Promise.all([recentReadingsByPond(ponds), loadOpenAlerts(ids)]);
   res.json({ ponds: ponds.map((pond) => toPondPayload(pond, recent.get(pond.id) ?? {}, open.get(pond.id) ?? {})) });
 });
 
@@ -134,7 +126,7 @@ pondsRouter.get("/:id", validate(pondIdParams, "params"), async (req, res) => {
     return res.status(404).json({ error: "pond not found" });
   }
 
-  const [recent, open] = await Promise.all([recentReadingsByPond([id]), loadOpenAlerts([id])]);
+  const [recent, open] = await Promise.all([recentReadingsByPond([pond]), loadOpenAlerts([id])]);
   res.json({ pond: toPondPayload(pond, recent.get(id) ?? {}, open.get(id) ?? {}) });
 });
 

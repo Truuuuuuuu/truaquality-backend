@@ -2,8 +2,9 @@ import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import type { Device } from "../generated/prisma/client.ts";
 import { createPrismaFake } from "../testing/prismaFake.ts";
-import { ingestSamples } from "./ingest.ts";
+import { createIngestSamples, ingestSamples } from "./ingest.ts";
 import { thresholdsFor } from "./parameters.ts";
+import { productionPolicyResolver, type ParameterPolicyResolver } from "./parameterPolicies.ts";
 
 // Shell-trace characterization of ingestSamples against the in-memory Prisma fake (TEST-01). Written against
 // the UNMODIFIED ingest.ts before the pure core is extracted: any behavior change in the extraction fails here.
@@ -54,6 +55,62 @@ const simulatorBatch = (value: number, recordedAt: Date): Message => ({
 
 const argsOf = (fake: ReturnType<typeof createPrismaFake>, op: string) =>
   fake.calls.filter((c) => c.op === op).map((c) => c.args as Record<string, any>);
+
+describe("isolated DO ingest shell", () => {
+  const resolver: ParameterPolicyResolver = {
+    ...productionPolicyResolver,
+    ingestPolicyFor: (parameter) => parameter === "dissolvedOxygen"
+      ? { state: "active", evidenceRef: "synthetic-test-only", bounds: { min: 0, max: 20 } }
+      : productionPolicyResolver.ingestPolicyFor(parameter),
+  };
+  const message: Message = {
+    firmwareVersion: "0.8.0-do-contract",
+    sensors: { temperature: "ok", dissolvedOxygen: "ok" },
+    samples: [{ recordedAt: T0, values: { temperature: 28, dissolvedOxygen: 0 } }],
+  };
+
+  test("production shell rejects DO while storing legacy values and recording status", async (t) => {
+    const fake = createPrismaFake();
+    fake.install(t);
+    const result = await ingestSamples(device(), message, T0);
+    assert.deepEqual(result, { status: "stored", accepted: 1, duplicates: 0, rejected: [
+      { recordedAt: T0, parameter: "dissolvedOxygen", value: 0, reason: "parameter validation pending" },
+    ] });
+    assert.deepEqual(fake.readings.map((row) => row.parameter), ["temperature"]);
+    assert.deepEqual(argsOf(fake, "device.update")[0]!.data.sensorStatus, message.sensors);
+    assert.deepEqual(argsOf(fake, "tx.$executeRaw").map((call) => call.values[0]), ["alert:pond-1:temperature"]);
+  });
+
+  test("injected shell stores zero, preserves dedupe and calls only its evaluator", async (t) => {
+    const fake = createPrismaFake();
+    fake.install(t);
+    const evaluated: { pondId: string; parameters: string[] }[] = [];
+    const isolated = createIngestSamples({ policyResolver: resolver, evaluateAlerts: async (pondId, parameters) => {
+      evaluated.push({ pondId, parameters: [...parameters] });
+    } });
+    assert.deepEqual(await isolated(device(), message, T0), { status: "stored", accepted: 2, duplicates: 0, rejected: [] });
+    assert.deepEqual(await isolated(device(), message, minute(1)), { status: "stored", accepted: 0, duplicates: 2, rejected: [] });
+    assert.deepEqual(evaluated, [{ pondId: "pond-1", parameters: ["temperature", "dissolvedOxygen"] }]);
+    assert.deepEqual(fake.readings.map(({ parameter, value }) => ({ parameter, value })), [
+      { parameter: "temperature", value: 28 }, { parameter: "dissolvedOxygen", value: 0 },
+    ]);
+    assert.deepEqual(fake.ops(), ["device.update", "reading.createMany", "device.update", "reading.createMany"]);
+    assert.equal(argsOf(fake, "device.update")[1]!.data.lastSeenAt.getTime(), T0.getTime());
+    // Constructing a test instance must never replace the production binding.
+    const production = await ingestSamples(device(), message, minute(2));
+    assert.equal(production.status === "stored" && production.rejected[0]?.reason, "parameter validation pending");
+  });
+
+  test("injected evaluator failure remains nonfatal after storage", async (t) => {
+    const fake = createPrismaFake();
+    fake.install(t);
+    const errors = t.mock.method(console, "error", () => {});
+    const isolated = createIngestSamples({ policyResolver: resolver, evaluateAlerts: async () => { throw new Error("isolated evaluator failed"); } });
+    assert.deepEqual(await isolated(device(), message, T0), { status: "stored", accepted: 2, duplicates: 0, rejected: [] });
+    assert.equal(fake.readings.length, 2);
+    assert.equal(errors.mock.callCount(), 1);
+  });
+});
 
 test("nominal simulator batch: stored, device touched, alert evaluated with no alert opened", async (t) => {
   const fake = createPrismaFake();

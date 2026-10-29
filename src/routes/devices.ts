@@ -4,7 +4,7 @@ import type { z } from "zod";
 import { uptimePercent } from "../lib/deviceDiagnosticsRules.ts";
 import { deviceSummarySelect, reportedStatuses } from "../lib/devices.ts";
 import { DEVICE_OFFLINE_AFTER_MS } from "../lib/deviceWatchdog.ts";
-import { PARAMETER_IDS } from "../lib/parameters.ts";
+import { KNOWN_PARAMETER_IDS } from "../lib/parameters.ts";
 import { prisma } from "../lib/prisma.ts";
 import { requireAuth } from "../middleware/requireAuth.ts";
 import { validate } from "../middleware/validate.ts";
@@ -59,8 +59,8 @@ devicesRouter.get("/:id/diagnostics", validate(deviceIdParams, "params"), async 
   const statuses = reportedStatuses(device.sensorStatus);
   // A sensor the unit reports before it is a known parameter (e.g. new firmware ahead of the backend) is still
   // listed, so a fault on it is never hidden from the page.
-  const known = new Set<string>(PARAMETER_IDS);
-  const parameters = [...PARAMETER_IDS, ...Object.keys(statuses).filter((key) => !known.has(key)).sort()];
+  const known = new Set<string>(KNOWN_PARAMETER_IDS);
+  const parameters = [...KNOWN_PARAMETER_IDS, ...Object.keys(statuses).filter((key) => !known.has(key)).sort()];
 
   const windowStart = new Date(Math.max(since.getTime(), device.createdAt.getTime()));
 
